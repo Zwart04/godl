@@ -196,6 +196,8 @@ Check "token baked into page" ($page.Content -match $token) "literal token not p
 Check "no placeholder left" ($page.Content -notmatch "__GODL_TOKEN__") "placeholder still present"
 Check "page is the IDM-style table" ($page.Content -match 'role="columnheader"') "column headers missing"
 Check "page offers a speed limit control" ($page.Content -match 'id="t-limit"') "limit button missing from the served page"
+Check "page offers queue ordering" ($page.Content -match 'id="t-up"') "move-up button missing from the served page"
+Check "page offers a schedule control" ($page.Content -match 'id="t-schedule"') "schedule button missing from the served page"
 
 $css = Invoke-WebRequest "$ep/app.css" -UseBasicParsing -TimeoutSec 10
 Check "stylesheet serves" ($css.StatusCode -eq 200) "got $($css.StatusCode)"
@@ -273,6 +275,75 @@ Check "progress shows 100%" ($fd.progress.percent -ge 99.9) "percent=$($fd.progr
 # puts the old value back - and because the transfer is over, nothing is left
 # running to make the loss visible. This is the check that catches it.
 Check "speed limit survived completion" ($fd.speed_limit -eq 1048576) "speed_limit=$($fd.speed_limit) after done, expected 1048576"
+
+# ── 3c. a scheduled start, and where a download sits in the queue ───────────
+#
+# A second download exists only so there is something to arrange: a list of
+# one has no order to change, and the refusals below would prove nothing. The
+# origin throttles, so it will still be waiting when we look at it.
+$add2 = Invoke-Api "/api/downloads" "POST" $true ('{"url":"' + $url + '","connections":2}')
+Check "second download accepted" ($add2.code -eq 201) "got $($add2.code): $($add2.body)"
+$added2 = ($add2.body | ConvertFrom-Json).download
+$secondId = $added2.id
+Check "second download has an id" ([bool]$secondId) "no id: $($add2.body)"
+
+# An hour away. The scheduler must hold it rather than treat it as work with
+# nowhere to go - which is also what keeps Start from sitting on a request
+# until the clock comes round.
+$when = (Get-Date).ToUniversalTime().AddHours(1).ToString("yyyy-MM-ddTHH:mm:ssZ")
+$sch = Invoke-Api ("/api/downloads/" + $secondId + "/schedule") "POST" $true ('{"starts_at":"' + $when + '"}')
+Check "schedule accepted on a queued download" ($sch.code -eq 200) "got $($sch.code): $($sch.body)"
+
+# Several scheduler passes rather than one, so the hold is a rule and not a
+# gap between writing the record and reading it again.
+Start-Sleep -Seconds 2
+$heldBody = (Invoke-Api "/api/downloads" "GET" $true $null).body
+$second = ($heldBody | ConvertFrom-Json).downloads | Where-Object { $_.id -eq $secondId }
+Check "scheduled download still queued" ($second.status -eq "queued") "status=$($second.status), expected queued"
+Check "scheduled download kept its time" ([bool]$second.starts_at) "starts_at missing from: $heldBody"
+Check "scheduled download has not transferred" (-not (Test-Path $added2.dest)) "the file exists while it is due in an hour"
+
+# A schedule the server cannot parse must be refused rather than stored as the
+# zero value, which would start the transfer at once and read as success.
+$badSch = Invoke-Api ("/api/downloads/" + $secondId + "/schedule") "POST" $true '{"starts_at":"tonight"}'
+Check "unparseable schedule refused" ($badSch.code -eq 400) "got $($badSch.code)"
+
+# Where it sits is visible in the next list, because that is what the arrows
+# in the window act on.
+$mv = Invoke-Api ("/api/downloads/" + $secondId + "/move-up") "POST" $true ''
+Check "move-up accepted" ($mv.code -eq 200) "got $($mv.code): $($mv.body)"
+$orderNow = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads
+Check "the moved download is first" ($orderNow[0].id -eq $secondId) "first is $($orderNow[0].id), want $secondId"
+Check "the other download followed it" ($orderNow[1].id -eq $fd.id) "second is $($orderNow[1].id), want $($fd.id)"
+
+# Off both ends: a statement about the list's shape, so 409 rather than a
+# failure of the server.
+$atHead = Invoke-Api ("/api/downloads/" + $secondId + "/move-up") "POST" $true ''
+Check "moving past the head refused" ($atHead.code -eq 409) "got $($atHead.code)"
+$atFoot = Invoke-Api ("/api/downloads/" + $fd.id + "/move-down") "POST" $true ''
+Check "moving past the foot refused" ($atFoot.code -eq 409) "got $($atFoot.code)"
+
+# Clearing the schedule is what lets it go - and it has to be seen to go, or
+# the check above would pass for a schedule that simply never applied.
+$clr = Invoke-Api ("/api/downloads/" + $secondId + "/schedule") "POST" $true '{"starts_at":""}'
+Check "schedule can be cleared" ($clr.code -eq 200) "got $($clr.code): $($clr.body)"
+$released = Wait-For "scheduled download to start" 10000 {
+    $d = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads |
+        Where-Object { $_.id -eq $secondId }
+    if ($d -and @('running', 'done') -contains $d.status) { $d.status } else { $null }
+}
+Check "cleared schedule released the download" ([bool]$released) "still queued after 10s"
+
+# Let it finish so that nothing is in flight when the window is asked to
+# close - closing with a transfer running is a different code path, and the
+# check further down is about a clean shutdown.
+$finished2 = Wait-For "second download to finish" 40000 {
+    $d = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads |
+        Where-Object { $_.id -eq $secondId }
+    if ($d -and $d.status -eq 'done') { 'done' } else { $null }
+}
+Check "scheduled download completed whole" ([bool]$finished2) "did not reach done in 40s"
+Check "scheduled download landed" (Test-Path $added2.dest) "no file at $($added2.dest)"
 
 # ── screenshot with a real row on screen ───────────────────────────────────
 try {

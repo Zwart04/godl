@@ -141,6 +141,11 @@ body {
   stroke-linejoin: round;
 }
 
+/* An arrow needs no caption, and leaving the label off buys back the width
+   the rest of the bar is competing for. */
+.tool.icon { padding: 0 7px; }
+.tool.icon svg { width: 15px; height: 15px; }
+
 .tool.primary {
   background: var(--accent);
   color: #fff;
@@ -287,6 +292,9 @@ body {
 .st-text.err { color: var(--red); }
 .st-text.done { color: var(--green); font-weight: 550; }
 .st-text.run { color: var(--accent); font-weight: 550; }
+/* Waiting on a clock is a held state, not a stalled one, and amber is the
+   difference between the two at a glance. */
+.st-text.wait { color: var(--amber); font-weight: 550; }
 
 /* The label and its cap share one line, so showing a cap never grows the row
    or costs the list a line of visible downloads. */
@@ -437,6 +445,14 @@ kbd {
 .field select.wide { width: 150px; }
 
 .field .custom { margin-top: 8px; }
+
+/* A sentence explaining what an empty field will do, which is the one thing
+   a time box cannot say about itself. */
+.sheet-hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
 
 .field input:focus, .field select:focus {
   border-color: var(--accent);

@@ -47,6 +47,10 @@ implementation is not.
 - Automatic fallback to a single connection when a server refuses `Range`
   requests — the connection count shown is always the one actually in use
 - Pause, resume, retry, and stop, all resumable across restarts
+- Queue order you can change: move a download ahead of the one above it and the
+  queue starts it next, not merely the row that moved in the window
+- A scheduled start, kept on the record so a transfer set for three in the
+  morning begins even with the app closed
 - Each connection writes its own region of one file, so segments never overlap
   and a finished part is never rewritten
 
@@ -58,6 +62,13 @@ implementation is not.
 - Resume continues from the progress already on disk, not from zero, and the
   engine refuses a resume the server will not honour rather than silently
   restarting
+- **A pause is a pause.** The scheduler is willing to start a paused record —
+  that is what lets a queue drain and what makes one resumable after a restart —
+  so it is told apart from a transfer that simply stopped. Nothing restarts a
+  download you paused until you ask it to
+- A failure waits for you. It is recorded as failed rather than retried behind
+  your back, so a host that cannot be reached is not probed again and again for
+  as long as the app stays open
 - State is persisted on every transition, so a crash costs seconds, not files
 - An endpoint left behind by a crashed run is verified with a real
   authenticated health check before being believed
@@ -136,9 +147,11 @@ Open **godl** from the Start Menu (or the desktop icon the setup created).
 | | |
 |---|---|
 | **Add** | Opens a sheet to paste a URL, name the file, and choose a connection count. <kbd>Ctrl</kbd>+<kbd>N</kbd>. |
-| **Pause / Resume** | Stops a transfer where it is and picks it back up later. Both survive closing the app. |
+| **Pause / Resume** | Stops a transfer where it is, and starts it again where it stopped. Pausing holds: nothing picks the download up until you resume it. Both survive closing the app. |
 | **Stop** | Abandons the transfer and discards the partial file. |
 | **Limit** | Caps how fast the selected download may transfer, from 128 KB/s up or a figure of your own. It takes effect on the transfer already running, not on the next one. |
+| **Arrows** | Move the selected download earlier or later in the queue. The queue starts them in that order. Pressing one drops a column sort, so you see the queue's own order — the one the arrows act on. |
+| **Schedule** | Says when this download may begin. A transfer already under way is stopped and held; a paused, failed or discarded one is put back in the queue for that time. An empty box means now, which is how a schedule is cleared. |
 | **Folder** | Opens Explorer with the finished file selected. |
 | **Delete** | Removes the record. |
 | **Close the window** | If transfers are running, you are asked first. In-flight ones are paused; queued ones start again on the next launch. |
@@ -230,6 +243,9 @@ A bearer token is created on first run and stored at
 | `POST` | `/api/downloads/{id}/retry` | Retry after a failure |
 | `POST` | `/api/downloads/{id}/cancel` | Stop and discard the partial file |
 | `POST` | `/api/downloads/{id}/speed-limit` | Cap this download, or clear the cap with `0` |
+| `POST` | `/api/downloads/{id}/schedule` | Say when this download may begin, or clear the schedule with an empty `starts_at` |
+| `POST` | `/api/downloads/{id}/move-up` | Move ahead of the download above it |
+| `POST` | `/api/downloads/{id}/move-down` | Move behind the download below it |
 | `POST` | `/api/downloads/{id}/reveal` | Show in Explorer |
 | `DELETE` | `/api/downloads/{id}` | Remove the record |
 
@@ -254,6 +270,26 @@ that is transferring right now, which is the reason it exists:
 { "speed_limit": 1048576 }       // 1 MB/s; 0 removes the cap
 ```
 
+`schedule` takes an RFC 3339 instant, or an empty string to mean "now", which
+is how a schedule is cleared:
+
+```jsonc
+// POST /api/downloads/0f3c1a9b7d2e4c5a/schedule
+{ "starts_at": "2026-10-20T03:00:00Z" }
+```
+
+It is accepted everywhere but a finished download, and it puts the record back
+in the queue — a time only means something to a transfer the queue is willing
+to start. A download already under way is stopped first, with its progress
+kept, because it has already begun and the only honest reading of "start it at
+nine" is "stop it now, start it at nine". `resume` and `retry` drop the
+schedule, since being told to go now is a newer answer to *when?* than the one
+on the record.
+
+`move-up` and `move-down` swap places with a neighbour and are answered against
+queue order — the order the list shows unless a column sort is over it. Off
+either end they return `409`, which describes the list rather than a fault.
+
 Progress is reported as:
 
 ```jsonc
@@ -263,6 +299,7 @@ Progress is reported as:
   "segmented": true,
   "connections": 8,
   "speed_limit": 1048576,
+  "starts_at": "2026-10-20T03:00:00Z",   // absent unless scheduled
   "total_size": 33554432,
   "progress": { "done": 16777216, "total": 33554432, "percent": 50.0, "speed": 4123568.0 }
 }
@@ -357,7 +394,7 @@ godl/
 - [x] Browser extension for Chrome, Edge and Firefox
 - [x] Single-file setup with install, shortcuts and uninstall
 - [x] Per-download speed limit, set when adding or moved while a transfer runs
-- [ ] Queue ordering and a scheduled start
+- [x] Queue ordering and a scheduled start
 - [ ] Download categories and folder rules
 - [ ] Clipboard monitor for copied links
 

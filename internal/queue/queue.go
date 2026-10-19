@@ -42,9 +42,43 @@ type Snapshot struct {
 	Connections    int             `json:"connections"`
 	// SpeedLimit is this download's own ceiling in bytes per second, as its
 	// owner set it. Zero means no ceiling.
-	SpeedLimit int64     `json:"speed_limit"`
-	CreatedAt  time.Time `json:"created_at"`
+	SpeedLimit int64 `json:"speed_limit"`
+	// Position and StartsAt mirror the record so the list reads in the order
+	// the queue will actually run it, and shows what is waiting on a clock.
+	Position int64      `json:"position"`
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
 }
+
+// byPosition orders any pair carrying the queue's own sort key.
+//
+// An unset position has to be dated from CreatedAt rather than read as zero,
+// because zero sorts before everything: a download nobody has ever moved would
+// otherwise jump to the top of a queue the moment one of its neighbours was
+// reordered. Date it and it stays where it arrived, which is where it already
+// was.
+func byPosition(ap int64, ac time.Time, bp int64, bc time.Time) bool {
+	if ap == 0 {
+		ap = ac.UnixNano()
+	}
+	if bp == 0 {
+		bp = bc.UnixNano()
+	}
+	if ap != bp {
+		return ap < bp
+	}
+	return ac.Before(bc)
+}
+
+func order(a, b *state.Download) bool {
+	return byPosition(a.Position, a.CreatedAt, b.Position, b.CreatedAt)
+}
+
+// ErrAtEnd is returned when a move has nowhere to go. It describes the shape
+// of the queue rather than a fault in the request, so the API answers 409 for
+// it instead of claiming the server broke.
+var ErrAtEnd = errors.New("already at the end of the queue")
 
 // entry holds the live view of one running download.
 //
@@ -73,11 +107,14 @@ type entry struct {
 }
 
 func (e *entry) snapshot() Snapshot {
+	// The whole copy is taken under the lock, not after it: position is
+	// written from outside while the transfer runs, and reading meta once the
+	// lock is gone would race the move that is meant to show up here.
 	e.mu.Lock()
 	status, errStr, fb := e.status, e.err, e.fallback
+	s := e.meta
 	e.mu.Unlock()
 
-	s := e.meta
 	s.Status = status
 	s.Error = errStr
 	s.FallbackReason = fb
@@ -87,6 +124,18 @@ func (e *entry) snapshot() Snapshot {
 	s.SpeedLimit = e.limit.Get()
 	s.Progress = e.prog.Snapshot()
 	return s
+}
+
+// publishPosition moves a running download in the list.
+//
+// Where it sits is the one thing about the record that can change without the
+// transfer itself changing, and meta is copied at launch - so without this the
+// window would keep drawing it in its old place until the file finished, and a
+// press that changes nothing on screen reads as a button that does nothing.
+func (e *entry) publishPosition(pos int64) {
+	e.mu.Lock()
+	e.meta.Position = pos
+	e.mu.Unlock()
 }
 
 func (e *entry) publish(status state.Status, errStr, fallback string) {
@@ -244,7 +293,13 @@ func (q *Queue) loop(ctx context.Context, opt engine.Options, drain bool) error 
 	}
 }
 
-// reapOrphans makes records left "running" by a killed process resumable.
+// reapOrphans makes records left "running" by a killed process start again.
+//
+// They are marked queued rather than paused. Nobody paused them: the process
+// died under the transfer, which is not a decision the user made, and asking
+// them to press Resume for every file an update rebooted away would be a
+// tax on something they never chose. A record they did pause is already
+// written as paused and is left exactly there.
 func (q *Queue) reapOrphans() {
 	if q.Store == nil {
 		return
@@ -255,7 +310,7 @@ func (q *Queue) reapOrphans() {
 	}
 	for _, d := range items {
 		if d.Status == state.StatusRunning {
-			d.Status = state.StatusPaused
+			d.Status = state.StatusQueued
 			d.Error = ""
 			q.save(d)
 		}
@@ -264,6 +319,12 @@ func (q *Queue) reapOrphans() {
 
 // dispatch starts whatever work it can and returns how many queued records are
 // still waiting for capacity.
+//
+// It starts only records the user has asked to run. Paused means they stopped
+// it and have not said otherwise; failed means the transfer ended badly and
+// Retry has not been pressed. Both used to be started here too, which undid a
+// pause within half a second and - since a failure once wore the label of a
+// pause - retried an unreachable file as fast as the network could refuse it.
 func (q *Queue) dispatch(ctx context.Context, opt engine.Options, wg *sync.WaitGroup, wake chan struct{}) int {
 	if q.Store == nil {
 		return 0
@@ -273,16 +334,21 @@ func (q *Queue) dispatch(ctx context.Context, opt engine.Options, wg *sync.WaitG
 		q.emit(Event{Kind: "failed", Err: err})
 		return 0
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].CreatedAt.Before(items[j].CreatedAt)
-	})
+	sort.Slice(items, func(i, j int) bool { return order(items[i], items[j]) })
 
+	now := time.Now()
 	queued := make([]*state.Download, 0, len(items))
 	for _, d := range items {
-		switch d.Status {
-		case state.StatusQueued, state.StatusPaused, state.StatusFailed:
-			queued = append(queued, d)
+		if d.Status != state.StatusQueued {
+			continue
 		}
+		// Waiting for a clock is not waiting for capacity. A download set for
+		// tomorrow has to stay out of this count, or it would look like a slot
+		// it is not actually asking for.
+		if d.Waiting(now) {
+			continue
+		}
+		queued = append(queued, d)
 	}
 
 	q.mu.Lock()
@@ -322,10 +388,11 @@ func (q *Queue) claim(id string, stop context.CancelFunc) (*state.Download, *ent
 	if err != nil {
 		return nil, nil, err
 	}
-	switch d.Status {
-	case state.StatusQueued, state.StatusPaused, state.StatusFailed:
-	default:
-		// Cancelled or removed between the scheduler's listing and here.
+	if d.Status != state.StatusQueued {
+		// Paused, failed, cancelled or already gone between the scheduler's
+		// listing and here. Resuming rewrites the record to queued first, so
+		// reaching this with a paused or failed record means something other
+		// than the user asked for it.
 		return nil, nil, fmt.Errorf("download is %s, nothing to start", d.Status)
 	}
 
@@ -348,6 +415,8 @@ func (q *Queue) claim(id string, stop context.CancelFunc) (*state.Download, *ent
 		// refuses ranges is downloaded on one connection and the UI has to
 		// report the truth rather than the intention.
 		Connections: len(d.Segments),
+		Position:    d.Position,
+		StartsAt:    d.StartsAt,
 		CreatedAt:   d.CreatedAt,
 		SpeedLimit:  clampLimit(d.SpeedLimit),
 	}
@@ -390,6 +459,14 @@ func (q *Queue) launch(ctx context.Context, opt engine.Options, id string, wg *s
 		runOpt.Limit = lim
 		_, err := (&engine.Runner{}).Run(itemCtx, d, runOpt)
 
+		// Read why the context ended before releasing it.
+		//
+		// cancel() below makes itemCtx.Err() non-nil for every outcome, so
+		// asking it afterwards reports every failure - a refused connection,
+		// a 500, a body cut short - as a pause nobody requested. The failed
+		// branch would be unreachable, and a file that cannot be downloaded
+		// would be relabelled as one that is merely waiting.
+		cancelled := itemCtx.Err() != nil
 		cancel()
 
 		// The entry stays in the live set until every disk write below has
@@ -411,7 +488,7 @@ func (q *Queue) launch(ctx context.Context, opt engine.Options, id string, wg *s
 			d.Error = ""
 			q.saveOwned(e, d)
 			q.emit(Event{Kind: "finished", ID: d.ID})
-		case itemCtx.Err() != nil:
+		case cancelled:
 			// The user asked us to stop: keep the progress, not the failure.
 			e.publish(state.StatusPaused, "", "")
 			d.Status = state.StatusPaused
@@ -467,6 +544,8 @@ func (q *Queue) Snapshot() []Snapshot {
 					Error:          d.Error,
 					FallbackReason: d.FallbackReason,
 					SpeedLimit:     clampLimit(d.SpeedLimit),
+					Position:       d.Position,
+					StartsAt:       d.StartsAt,
 					CreatedAt:      d.CreatedAt,
 				})
 			}
@@ -477,7 +556,9 @@ func (q *Queue) Snapshot() []Snapshot {
 			out = append(out, e.snapshot())
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		return byPosition(out[i].Position, out[i].CreatedAt, out[j].Position, out[j].CreatedAt)
+	})
 	return out
 }
 
@@ -491,19 +572,33 @@ func (q *Queue) Pause(id string) error {
 }
 
 // Resume queues a paused download again.
+//
+// Any schedule is dropped. Being told to go now is a newer answer to "when?"
+// than the timestamp still on the record, and keeping it would have the queue
+// hold this download until a time the user has just overridden - a Resume that
+// did nothing is worse than one that starts something they had scheduled.
 func (q *Queue) Resume(id string) error {
 	if q.busy(id) {
 		return errors.New("download is already running")
 	}
-	return q.rewrite(id, state.StatusQueued, false)
+	return q.update(id, func(d *state.Download) {
+		d.Status = state.StatusQueued
+		d.StartsAt = nil
+		d.Error = ""
+	})
 }
 
-// Retry queues a failed download again, keeping its progress.
+// Retry queues a failed download again, keeping its progress. As with Resume,
+// a schedule the caller is overriding by asking for this now is dropped.
 func (q *Queue) Retry(id string) error {
 	if q.busy(id) {
 		return errors.New("download is already running")
 	}
-	return q.rewrite(id, state.StatusQueued, false)
+	return q.update(id, func(d *state.Download) {
+		d.Status = state.StatusQueued
+		d.StartsAt = nil
+		d.Error = ""
+	})
 }
 
 // SetLimit gives a download its own ceiling in bytes per second, and applies
@@ -532,6 +627,122 @@ func (q *Queue) SetLimit(id string, bps int64) error {
 		e.limit.Set(bps)
 	}
 	return nil
+}
+
+// MoveUp puts a download ahead of the one above it; MoveDown behind the one
+// below.
+//
+// The two sort keys are swapped rather than the whole list renumbered. A
+// renumbering would hand out duplicate positions the first time it met a
+// record that had never been moved and so had no position of its own - and
+// duplicate positions throw the queue back on its tiebreak, which is exactly
+// what the user was trying to override.
+func (q *Queue) MoveUp(id string) error   { return q.move(id, -1) }
+func (q *Queue) MoveDown(id string) error { return q.move(id, 1) }
+
+func (q *Queue) move(id string, step int) error {
+	q.recMu.Lock()
+	defer q.recMu.Unlock()
+
+	if q.Store == nil {
+		return errors.New("no store configured")
+	}
+	items, err := q.Store.List()
+	if err != nil {
+		return err
+	}
+	sort.Slice(items, func(i, j int) bool { return order(items[i], items[j]) })
+
+	idx := -1
+	for i, d := range items {
+		if d.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return errors.New("no such download")
+	}
+	other := idx + step
+	if other < 0 || other >= len(items) {
+		return ErrAtEnd
+	}
+
+	a, b := items[idx], items[other]
+	// Date both before swapping. An unset key reads as "where it arrived", so
+	// swapping a set key against an unset one would leave the list standing
+	// still and look as though the button had done nothing.
+	if a.Position == 0 {
+		a.Position = a.CreatedAt.UnixNano()
+	}
+	if b.Position == 0 {
+		b.Position = b.CreatedAt.UnixNano()
+	}
+	a.Position, b.Position = b.Position, a.Position
+
+	if err := q.Store.Save(a); err != nil {
+		return err
+	}
+	if err := q.Store.Save(b); err != nil {
+		return err
+	}
+
+	// Publish to anything transferring, now that disk agrees. Without this the
+	// list would hold the old order until both files finished, and a move that
+	// shows nothing is a move the user will press again.
+	for _, moved := range []*state.Download{a, b} {
+		if e := q.liveEntry(moved.ID); e != nil {
+			e.publishPosition(moved.Position)
+		}
+	}
+	return nil
+}
+
+// Schedule says when a download may first begin, or clears the schedule when
+// at is nil.
+//
+// It also puts the record back in the queue, because a time only means
+// something to a transfer the queue is willing to start: a paused, failed or
+// discarded download would keep its timestamp and never act on it, which reads
+// as the control having done nothing.
+//
+// A transfer already under way is stopped first. It has already begun, so the
+// only honest reading of "start it at nine" is "stop it now, start it at nine"
+// - and the worker has to be gone before this writes, or its own final save
+// would land afterwards and put "paused" back over the queue's copy.
+func (q *Queue) Schedule(id string, at *time.Time) error {
+	if e := q.liveEntry(id); e != nil {
+		e.stop()
+		if err := q.awaitIdle(id); err != nil {
+			return err
+		}
+	}
+	return q.update(id, func(d *state.Download) {
+		d.StartsAt = at
+		d.Status = state.StatusQueued
+		d.Error = ""
+	})
+}
+
+// ErrBusy is returned when a transfer could not be stopped in time for the
+// caller to write over it. It is a transient disagreement about who owns the
+// record, not a fault in the server, so it is answered as a conflict.
+var ErrBusy = errors.New("the transfer did not stop in time; try again")
+
+// awaitIdle waits for a worker to finish writing its record.
+//
+// The caller is about to overwrite that record's status. Writing first would
+// lose the race to the worker's own final save, and the download would end up
+// in whatever state that save said rather than the one the user asked for.
+func (q *Queue) awaitIdle(id string) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !q.busy(id) {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return ErrBusy
 }
 
 // Cancel stops a download and discards the bytes it had gathered.
@@ -629,15 +840,39 @@ func (q *Queue) save(d *state.Download) {
 
 // saveOwned is the worker's writer.
 //
-// It refreshes the speed limit from the live handle first. SetLimit writes a
-// record of its own that this struct never sees, so saving without that
-// refresh would carry the ceiling the transfer was launched with back over the
-// one the user chose - landing at the worst possible moment, the instant the
-// file finishes, where nothing is left running to make it visible.
+// It re-reads the record and applies only the fields this worker changed: its
+// status, its error, and where its bytes got to. Everything else may have been
+// edited while the transfer ran - the ceiling it runs under, where it sits in
+// the queue, when it is due to start - and those writes belong to whoever made
+// them. Saving the copy this worker was launched with would carry stale values
+// back over them, landing at the worst possible moment: the instant the file
+// finishes, where nothing is left running to make the loss visible.
+//
+// Fields this worker knows nothing about are therefore kept as they are on
+// disk, which is the safe direction - an unknown field is one it cannot have
+// meaningfully changed, and preserving it costs nothing while losing it would
+// silently undo a user's action.
 func (q *Queue) saveOwned(e *entry, d *state.Download) {
 	q.recMu.Lock()
-	d.SpeedLimit = e.limit.Get()
-	err := q.Store.Save(d)
+	fresh := d
+	if loaded, err := q.load(d.ID); err == nil {
+		loaded.Status = d.Status
+		loaded.Error = d.Error
+		loaded.Segments = d.Segments
+		loaded.TotalSize = d.TotalSize
+		loaded.Segmented = d.Segmented
+		loaded.ETag = d.ETag
+		loaded.LastModified = d.LastModified
+		loaded.SuggestedName = d.SuggestedName
+		loaded.SingleConnectionFallback = d.SingleConnectionFallback
+		loaded.FallbackReason = d.FallbackReason
+		loaded.UpdatedAt = d.UpdatedAt
+		fresh = loaded
+	}
+	// Still read from the handle: SetLimit writes a record of its own that
+	// this struct never sees, so the live ceiling is the authority here.
+	fresh.SpeedLimit = e.limit.Get()
+	err := q.Store.Save(fresh)
 	q.recMu.Unlock()
 	if err != nil {
 		q.emit(Event{Kind: "error", ID: d.ID, Err: fmt.Errorf("saving %s: %w", d.ID, err)})

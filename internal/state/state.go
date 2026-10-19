@@ -77,6 +77,18 @@ type Download struct {
 	// transfer it belongs to may outlive the window where it was set.
 	SpeedLimit int64 `json:"speed_limit,omitempty"`
 
+	// Position orders this download among its neighbours. Zero means "no
+	// opinion", in which case CreatedAt decides - which is the order they
+	// arrived in, and so what the queue looked like before anything was
+	// moved by hand. Storing the user's answer separately from the clock is
+	// what lets them say "this one first" without rewriting when it was added.
+	Position int64 `json:"position,omitempty"`
+
+	// StartsAt is the earliest moment this download may begin. Nil means
+	// now. It lives on the record rather than in memory so something
+	// scheduled for the small hours still starts with the app closed.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+
 	Segments []Segment `json:"segments"`
 	Status   Status    `json:"status"`
 	Error    string    `json:"error,omitempty"`
@@ -89,6 +101,15 @@ type Download struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Waiting reports whether a clock, rather than capacity, is what stands
+// between this record and its transfer. The scheduler uses it to keep a
+// download set for tomorrow from being counted as work waiting for a slot
+// tonight - two very different reasons for not running, and only one of them
+// means the queue is backed up.
+func (d *Download) Waiting(now time.Time) bool {
+	return d.StartsAt != nil && d.StartsAt.After(now)
 }
 
 // Progress returns bytes completed out of the total.

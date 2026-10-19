@@ -129,6 +129,9 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		{"pause", http.MethodPost, "/api/downloads/none/pause", ""},
 		{"remove", http.MethodDelete, "/api/downloads/none", ""},
 		{"speed-limit", http.MethodPost, "/api/downloads/none/speed-limit", `{"speed_limit":1024}`},
+		{"schedule", http.MethodPost, "/api/downloads/none/schedule", `{"starts_at":"2030-01-01T00:00:00Z"}`},
+		{"move-up", http.MethodPost, "/api/downloads/none/move-up", ""},
+		{"move-down", http.MethodPost, "/api/downloads/none/move-down", ""},
 	}
 
 	for _, tc := range cases {
@@ -434,10 +437,11 @@ func TestFinishedDownloadCanBeRemovedButNotRestarted(t *testing.T) {
 	}
 
 	for action, want := range map[string]int{
-		"pause":  http.StatusConflict,
-		"resume": http.StatusConflict,
-		"retry":  http.StatusConflict,
-		"cancel": http.StatusConflict,
+		"pause":    http.StatusConflict,
+		"resume":   http.StatusConflict,
+		"retry":    http.StatusConflict,
+		"cancel":   http.StatusConflict,
+		"schedule": http.StatusConflict,
 	} {
 		rec := call(t, f, http.MethodPost, "/api/downloads/"+finished.ID+"/"+action, testToken, "")
 		if rec.Code != want {
@@ -604,5 +608,188 @@ func TestSpeedLimitRefusesWhatItCannotHonour(t *testing.T) {
 	if rec = call(t, f, http.MethodPost, "/api/downloads", testToken,
 		`{"url":"`+srv.URL+`/f.bin","filename":"n.bin","connections":4,"speed_limit":-10}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("add with a negative limit: status = %d, want 400", rec.Code)
+	}
+}
+
+type orderedList struct {
+	Downloads []struct {
+		ID       string     `json:"id"`
+		StartsAt *time.Time `json:"starts_at"`
+	} `json:"downloads"`
+}
+
+func idsOf(rec *httptest.ResponseRecorder) []string {
+	var out orderedList
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		return nil
+	}
+	got := make([]string, 0, len(out.Downloads))
+	for _, d := range out.Downloads {
+		got = append(got, d.ID)
+	}
+	return got
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// The order the window shows is the order the queue runs, so moving a row has
+// to be visible in the very next list - not only in the next transfer.
+func TestQueueOrderIsVisibleAndChangeableOverTheAPI(t *testing.T) {
+	f := newFixture(t)
+	body := bytes.Repeat([]byte("godl"), 4096)
+	srv := ranged(t, body)
+
+	var ids []string
+	for _, name := range []string{"one.bin", "two.bin", "three.bin"} {
+		// Three separate addresses: adding the same URL twice is answered as
+		// a duplicate and hands back the record already in the list.
+		_, added := add(t, f, srv.URL+"/"+name, name, 4)
+		if added.Download.ID == "" {
+			t.Fatalf("add %s returned no id", name)
+		}
+		ids = append(ids, added.Download.ID)
+	}
+
+	list := func() []string {
+		t.Helper()
+		rec := call(t, f, http.MethodGet, "/api/downloads", testToken, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: status = %d", rec.Code)
+		}
+		return idsOf(rec)
+	}
+	post := func(id, action string) *httptest.ResponseRecorder {
+		t.Helper()
+		return call(t, f, http.MethodPost, "/api/downloads/"+id+"/"+action, testToken, "")
+	}
+
+	if got := list(); !equalStrings(got, ids) {
+		t.Fatalf("initial order = %v, want %v", got, ids)
+	}
+
+	// The newest download to the head, which is two steps.
+	for i := 0; i < 2; i++ {
+		if rec := post(ids[2], "move-up"); rec.Code != http.StatusOK {
+			t.Fatalf("move-up %d: status = %d, body = %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if got, want := list(), []string{ids[2], ids[0], ids[1]}; !equalStrings(got, want) {
+		t.Fatalf("after two move-ups order = %v, want %v", got, want)
+	}
+
+	// One down from the head puts it back in the middle.
+	if rec := post(ids[2], "move-down"); rec.Code != http.StatusOK {
+		t.Fatalf("move-down: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := list(), []string{ids[0], ids[2], ids[1]}; !equalStrings(got, want) {
+		t.Fatalf("after move-down order = %v, want %v", got, want)
+	}
+
+	// Off both ends: a statement about the list's shape, not a server fault.
+	if rec := post(ids[0], "move-up"); rec.Code != http.StatusConflict {
+		t.Fatalf("move-up at the head: status = %d, want 409", rec.Code)
+	}
+	if rec := post(ids[1], "move-down"); rec.Code != http.StatusConflict {
+		t.Fatalf("move-down at the foot: status = %d, want 409", rec.Code)
+	}
+	if rec := post("nope", "move-up"); rec.Code != http.StatusNotFound {
+		t.Fatalf("move-up unknown: status = %d, want 404", rec.Code)
+	}
+}
+
+// A schedule is a timestamp the server has to understand, and a download with
+// no start left to postpone is refused before its payload is even read.
+func TestScheduleTakesATimeAndRefusesWhatCannotBeHonoured(t *testing.T) {
+	f := newFixture(t)
+	body := bytes.Repeat([]byte("godl"), 4096)
+	srv := ranged(t, body)
+
+	_, added := add(t, f, srv.URL+"/file.bin", "later.bin", 4)
+	id := added.Download.ID
+	schedule := func(payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		return call(t, f, http.MethodPost, "/api/downloads/"+id+"/schedule", testToken, payload)
+	}
+
+	when := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	rec := schedule(`{"starts_at":"` + when.Format(time.RFC3339) + `"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("schedule: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	stored, err := f.store.Load(id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.StartsAt == nil || !stored.StartsAt.Equal(when) {
+		t.Fatalf("starts_at = %v, want %v", stored.StartsAt, when)
+	}
+
+	// The list is what the window draws from, so the schedule has to be there.
+	rec = call(t, f, http.MethodGet, "/api/downloads", testToken, "")
+	var listed orderedList
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Downloads) != 1 || listed.Downloads[0].StartsAt == nil {
+		t.Fatalf("list did not carry starts_at: %s", rec.Body.String())
+	}
+
+	// A time the server cannot parse is refused rather than stored as the
+	// zero value, which would start the download at once and look like the
+	// schedule had simply been ignored.
+	if rec = schedule(`{"starts_at":"tomorrow"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unparseable time: status = %d, want 400", rec.Code)
+	}
+	if rec = schedule(`not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: status = %d, want 400", rec.Code)
+	}
+	stored, err = f.store.Load(id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.StartsAt == nil || !stored.StartsAt.Equal(when) {
+		t.Fatalf("a rejected schedule left starts_at = %v, want %v", stored.StartsAt, when)
+	}
+
+	// Empty means "now", which is how the schedule is cleared.
+	if rec = schedule(`{"starts_at":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("clear schedule: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	stored, err = f.store.Load(id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.StartsAt != nil {
+		t.Fatalf("starts_at after clearing = %v, want nil", stored.StartsAt)
+	}
+
+	// A finished download has no start left to postpone, and says so even
+	// when the caller sent no body at all to reject instead.
+	finished := &state.Download{
+		ID:        state.NewID(),
+		URL:       "http://example.com/already-here.zip",
+		Dest:      filepath.Join(f.filesDir, "already-here.zip"),
+		PartPath:  filepath.Join(f.filesDir, "already-here.zip.part"),
+		TotalSize: 10,
+		Segments:  state.PlanSegments(10, 1),
+		Status:    state.StatusDone,
+		CreatedAt: time.Now(),
+	}
+	if err := f.store.Save(finished); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	rec = call(t, f, http.MethodPost, "/api/downloads/"+finished.ID+"/schedule", testToken, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("schedule a finished download: status = %d, want 409", rec.Code)
 	}
 }

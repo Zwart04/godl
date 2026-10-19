@@ -42,6 +42,23 @@
       <span>Limit</span>
     </button>
 
+    <!-- Ordering reads as a shape, not as a word, so these two carry no label:
+         an arrow pointing where the row will go says it faster than "up" does,
+         and it keeps the bar to a width the window already has. The wording is
+         about the queue rather than the screen, because a column sort is
+         dropped as soon as one of these is pressed. -->
+    <button class="tool icon" id="t-up" disabled title="Move this download earlier in the queue">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5v-9"/><path d="M4.5 7L8 3.5 11.5 7"/></svg>
+    </button>
+    <button class="tool icon" id="t-down" disabled title="Move this download later in the queue">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9"/><path d="M4.5 9L8 12.5 11.5 9"/></svg>
+    </button>
+
+    <button class="tool" id="t-schedule" disabled title="Choose when this download may begin">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.75V8l2.25 1.5"/></svg>
+      <span>Schedule</span>
+    </button>
+
     <button class="tool" id="t-reveal" disabled title="Show the file in Explorer">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h4l1.2 1.5h7.8v6.5h-13z"/></svg>
       <span>Folder</span>
@@ -142,6 +159,26 @@
     <div class="sheet-actions">
       <button class="tool" id="l-cancel" type="button">Cancel</button>
       <button class="tool primary" id="l-ok" type="button">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="sched" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sc-title">
+    <h2 id="sc-title">Schedule</h2>
+    <p class="sheet-note" id="sc-who"></p>
+
+    <div class="field">
+      <span>Start at</span>
+      <input id="sc-when" type="datetime-local">
+      <p class="sheet-hint">Left empty, it starts as soon as a slot is free.</p>
+    </div>
+
+    <p class="sheet-error" id="sc-error" hidden></p>
+
+    <div class="sheet-actions">
+      <button class="tool" id="sc-cancel" type="button">Cancel</button>
+      <button class="tool primary" id="sc-ok" type="button">Apply</button>
     </div>
   </div>
 </div>

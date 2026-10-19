@@ -135,6 +135,13 @@ func (s *Server) Handler() http.Handler {
 		return reveal(d.Dest)
 	})))
 	mux.Handle("POST /api/downloads/{id}/speed-limit", s.authed(http.HandlerFunc(s.handleSpeedLimit)))
+	mux.Handle("POST /api/downloads/{id}/schedule", s.authed(http.HandlerFunc(s.handleSchedule)))
+	mux.Handle("POST /api/downloads/{id}/move-up", s.authed(s.action("move-up", func(q *queue.Queue, id string) error {
+		return q.MoveUp(id)
+	})))
+	mux.Handle("POST /api/downloads/{id}/move-down", s.authed(s.action("move-down", func(q *queue.Queue, id string) error {
+		return q.MoveDown(id)
+	})))
 
 	mux.Handle("GET /app.js", s.staticFile("app.js", "text/javascript; charset=utf-8"))
 	mux.Handle("GET /app.css", s.staticFile("app.css", "text/css; charset=utf-8"))
@@ -326,7 +333,14 @@ func (s *Server) action(name string, fn func(*queue.Queue, string) error) http.H
 			return
 		}
 		if err := fn(s.Queue, id); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			// A move with nowhere to go describes the queue, not a fault in
+			// the request - answering 500 would tell the caller the server
+			// broke when it was already where they asked for.
+			code := http.StatusInternalServerError
+			if errors.Is(err, queue.ErrAtEnd) {
+				code = http.StatusConflict
+			}
+			writeErr(w, code, err.Error())
 			return
 		}
 		if name == "resume" || name == "retry" {
@@ -370,6 +384,63 @@ func (s *Server) handleSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
 }
 
+// handleSchedule sets when a download may first begin.
+//
+// It is not routed through action() for the same reason speed-limit is not: a
+// schedule is a value to store, not a transition to check. The state guard
+// lives in actionAllowed instead, so a download that has no start left to
+// postpone is refused before the body is even read.
+func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
+	// The record is checked before its body is read. A caller who cannot
+	// schedule this download cannot fix that by changing the payload, so
+	// telling them so first saves them from composing a better-shaped one.
+	id := r.PathValue("id")
+	cur, ok := s.find(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no such download")
+		return
+	}
+	if !actionAllowed("schedule", cur.Status) {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("cannot schedule a download that is %s", cur.Status))
+		return
+	}
+
+	var req struct {
+		// StartsAt is an RFC 3339 timestamp, or the empty string to run it now.
+		StartsAt string `json:"starts_at"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	var at *time.Time
+	if raw := strings.TrimSpace(req.StartsAt); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "starts_at must be an RFC 3339 timestamp, or empty to run now")
+			return
+		}
+		at = &parsed
+	}
+	if err := s.Queue.Schedule(id, at); err != nil {
+		// Stopping a transfer did not complete in time. That is a disagreement
+		// about who owns the record right now, not a fault in the server.
+		code := http.StatusInternalServerError
+		if errors.Is(err, queue.ErrBusy) {
+			code = http.StatusConflict
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	// The scheduler may already be sitting in its sleep; a schedule moved
+	// earlier has to reach it without waiting out the rest of the interval.
+	s.Queue.Kick()
+
+	next, _ := s.find(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
+}
+
 func (s *Server) find(id string) (queue.Snapshot, bool) {
 	for _, snap := range s.Queue.Snapshot() {
 		if snap.ID == id {
@@ -403,6 +474,19 @@ func actionAllowed(action string, status state.Status) bool {
 	case "reveal":
 		// Opening a folder changes nothing, so every state answers.
 		return true
+	case "move-up", "move-down":
+		// Where a record sits in the list is not a state it is in, so a
+		// finished download may be moved too - it costs nothing and keeps
+		// one rule for the whole column.
+		return true
+	case "schedule":
+		// Everything but a finished download. It is not about the state the
+		// record is in so much as the one it should be in when the time
+		// comes, and a transfer already under way has to be stopped first
+		// rather than refused - the queue starts things the moment they are
+		// added, so refusing anything not already waiting would leave this
+		// control usable only in the milliseconds before the first byte.
+		return status != state.StatusDone
 	}
 	return false
 }

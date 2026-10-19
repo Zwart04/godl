@@ -31,6 +31,9 @@ const ui = {
   resume: $('t-resume'),
   stop: $('t-stop'),
   limit: $('t-limit'),
+  up: $('t-up'),
+  down: $('t-down'),
+  schedule: $('t-schedule'),
   reveal: $('t-reveal'),
   remove: $('t-remove'),
   modal: $('modal'),
@@ -49,6 +52,12 @@ const ui = {
   lErr: $('l-error'),
   lCancel: $('l-cancel'),
   lOk: $('l-ok'),
+  schedModal: $('sched'),
+  scWho: $('sc-who'),
+  scWhen: $('sc-when'),
+  scErr: $('sc-error'),
+  scCancel: $('sc-cancel'),
+  scOk: $('sc-ok'),
   toast: $('toast'),
 };
 
@@ -181,6 +190,44 @@ function readLimit(sel, custom) {
   return Math.round(kbps * 1024);
 }
 
+/* ── scheduling ─────────────────────────────────────────────────────────── */
+
+const two = (n) => String(n).padStart(2, '0');
+
+// Reads a datetime-local box into a Date on this machine's clock.
+//
+// Parsing the string with Date() would do the wrong thing: a date-time with
+// no offset is read as UTC, so 22:00 in the box would mean 22:00 in London
+// and the download would start hours before the user asked for.
+function localWhen(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value || '');
+  if (!m) return null;
+  const at = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  return isNaN(at.getTime()) ? null : at;
+}
+
+// Puts a stored instant back in the box in this machine's own time, so what
+// was set is what is shown.
+function boxWhen(iso) {
+  const at = new Date(iso);
+  if (isNaN(at.getTime())) return '';
+  return at.getFullYear() + '-' + two(at.getMonth() + 1) + '-' + two(at.getDate()) +
+    'T' + two(at.getHours()) + ':' + two(at.getMinutes());
+}
+
+// The local time a download is held until, as text, or null when it is not
+// waiting on a clock. A schedule already in the past is one the scheduler is
+// free to act on, and "Starts yesterday" beside a queued file would only be
+// confusing.
+function scheduledFor(d) {
+  if (!d.starts_at) return null;
+  const at = new Date(d.starts_at);
+  if (isNaN(at.getTime()) || at.getTime() <= Date.now()) return null;
+  return at.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 /* ── rows ──────────────────────────────────────────────────────────────── */
 
 function createRow(id) {
@@ -234,12 +281,19 @@ function updateRow(row, d) {
     row.st.textContent = d.error;
     row.st.title = d.error;
   } else {
+    // A download waiting on a clock has to name it. "Queued" beside nothing
+    // happening reads as a queue that has quietly stalled, when the truth is
+    // that it is doing exactly what it was told.
+    const waiting = scheduledFor(d);
     const text = status === 'running'
       ? Math.round(pct) + '% · ' + (LABEL[status] || status)
-      : (LABEL[status] || status);
-    row.st.className = 'st-text' + (status === 'done' ? ' done' : status === 'running' ? ' run' : '');
+      : waiting
+        ? 'Starts ' + waiting
+        : (LABEL[status] || status);
+    row.st.className = 'st-text' +
+      (status === 'done' ? ' done' : status === 'running' ? ' run' : waiting ? ' wait' : '');
     row.st.textContent = text;
-    row.st.title = '';
+    row.st.title = waiting ? 'Held until ' + waiting : '';
   }
 
   const live = status === 'running' && p.speed > 0;
@@ -357,6 +411,16 @@ function syncToolbar() {
   // A finished or discarded download has no transfer left to throttle; the
   // server would accept the change and it would mean nothing.
   ui.limit.disabled = !(st !== null && st !== 'done' && st !== 'cancelled');
+  // The arrows answer against queue order, which the list is already in unless
+  // a column sort is showing over it - so the ends are known here, and the
+  // buttons say so instead of waiting to be refused by the server.
+  const idx = selected === null ? -1 : items.findIndex((x) => x.id === selected);
+  ui.up.disabled = idx <= 0;
+  ui.down.disabled = idx < 0 || idx >= items.length - 1;
+  // Only records with a start left to postpone may be given one: a transfer
+  // already under way has begun, and a finished one has nothing to begin.
+  ui.schedule.disabled = !(st === 'queued' || st === 'paused' ||
+    st === 'failed' || st === 'cancelled');
   ui.reveal.disabled = !d;
   ui.remove.disabled = !d;
 }
@@ -490,6 +554,89 @@ async function submitLimit() {
   }
 }
 
+/* ── queue order ────────────────────────────────────────────────────────── */
+
+// Drops a column sort so the list is in queue order again, which is the order
+// the arrows act on. Left in place, an arrow would reorder against a list the
+// user cannot see - and a move that changes nothing on screen reads as a
+// button that does not work.
+function clearSort() {
+  if (sortKey === null) return;
+  sortKey = null;
+  sortDir = 1;
+  document.querySelectorAll('.th').forEach((h) => h.classList.remove('sorted'));
+  lastOrder = '';
+}
+
+async function move(step) {
+  if (selected === null) return;
+  clearSort();
+  await act(step < 0 ? 'move-up' : 'move-down');
+}
+
+/* ── schedule sheet ─────────────────────────────────────────────────────── */
+
+function openSchedule() {
+  const d = current();
+  if (!d) return;
+  ui.schedModal.hidden = false;
+  ui.scErr.hidden = true;
+  ui.scErr.textContent = '';
+  ui.scWho.textContent = d.dest || d.url || '';
+  ui.scWho.title = d.dest || '';
+  ui.scWhen.value = d.starts_at ? boxWhen(d.starts_at) : '';
+  setTimeout(() => ui.scWhen.focus(), 40);
+}
+
+function closeSchedule() {
+  ui.schedModal.hidden = true;
+}
+
+function scheduleError(message) {
+  ui.scErr.textContent = message;
+  ui.scErr.hidden = false;
+}
+
+async function submitSchedule() {
+  if (!selected) return;
+
+  const at = localWhen(ui.scWhen.value);
+  if (ui.scWhen.value && !at) {
+    scheduleError('Pick a date and time, or clear the box to start it now.');
+    ui.scWhen.focus();
+    return;
+  }
+  // A time already behind us would be stored, read as runnable, and start the
+  // transfer immediately - which is not what someone typing it asked for.
+  if (at && at.getTime() <= Date.now()) {
+    scheduleError('That time has already passed. Clear the box to start it now.');
+    ui.scWhen.focus();
+    return;
+  }
+
+  ui.scOk.disabled = true;
+  ui.scOk.textContent = 'Applying…';
+  try {
+    await api('/api/downloads/' + enc(selected) + '/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starts_at: at ? at.toISOString() : '' }),
+    });
+    closeSchedule();
+    toast(at
+      ? 'Starts ' + at.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      }) + '.'
+      : 'Starts as soon as a slot is free.', false);
+    await refresh();
+  } catch (err) {
+    scheduleError(err.message);
+  } finally {
+    ui.scOk.disabled = false;
+    ui.scOk.textContent = 'Apply';
+  }
+}
+
 /* Shows the custom box only when "Custom" is chosen, and focuses it so the
  * next keystroke lands somewhere useful. */
 function wireLimitSelect(sel, custom) {
@@ -521,6 +668,14 @@ ui.lOk.addEventListener('click', submitLimit);
 ui.lSpeed.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLimit(); });
 ui.lSpeedCustom.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLimit(); });
 
+ui.up.addEventListener('click', () => move(-1));
+ui.down.addEventListener('click', () => move(1));
+ui.schedule.addEventListener('click', openSchedule);
+ui.scCancel.addEventListener('click', closeSchedule);
+ui.schedModal.addEventListener('click', (e) => { if (e.target === ui.schedModal) closeSchedule(); });
+ui.scOk.addEventListener('click', submitSchedule);
+ui.scWhen.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSchedule(); });
+
 wireLimitSelect(ui.mLimit, ui.mLimitCustom);
 wireLimitSelect(ui.lSpeed, ui.lSpeedCustom);
 
@@ -534,7 +689,12 @@ ui.reveal.addEventListener('click', () => act('reveal'));
 ui.remove.addEventListener('click', () => act('remove'));
 
 document.addEventListener('keydown', (e) => {
-  // The limit sheet sits above the add sheet, so it gets first refusal.
+  // The sheets stack, so the one on top answers first - otherwise Escape
+  // would close two of them at once and leave the caller unsure what changed.
+  if (!ui.schedModal.hidden) {
+    if (e.key === 'Escape') closeSchedule();
+    return;
+  }
   if (!ui.limitModal.hidden) {
     if (e.key === 'Escape') closeLimit();
     return;
@@ -554,10 +714,19 @@ document.addEventListener('keydown', (e) => {
 document.querySelectorAll('.th[data-sort]').forEach((th) => {
   th.addEventListener('click', () => {
     const key = th.dataset.sort;
-    if (sortKey === key) sortDir = -sortDir;
-    else { sortKey = key; sortDir = 1; }
+    if (sortKey === key) {
+      // Ascending, then descending, then the queue's own order again.
+      // Without the third step a sort could never be undone, and the list
+      // would have no way to show the order the arrows actually move things
+      // in - a reorder that nothing on screen reflects looks like no-op.
+      if (sortDir === -1) sortKey = null;
+      else sortDir = -sortDir;
+    } else {
+      sortKey = key;
+      sortDir = 1;
+    }
     document.querySelectorAll('.th').forEach((h) => h.classList.remove('sorted'));
-    th.classList.add('sorted');
+    if (sortKey !== null) th.classList.add('sorted');
     lastOrder = '';           // force the DOM back into the new order
     render(items);
   });

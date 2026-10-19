@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,7 +65,9 @@ func TestQueueRunsEveryPendingDownload(t *testing.T) {
 		want = append(want, d)
 	}
 
-	// A paused download is treated as work to resume, so it is queued too.
+	// A paused download is held, not work to start: the scheduler used to pick
+	// these up too, which is what made the Pause button undo itself within half
+	// a second. It must be left exactly as it was found.
 	pausedDest := filepath.Join(dir, "paused.bin")
 	paused := &state.Download{
 		ID:        state.NewID(),
@@ -83,7 +86,6 @@ func TestQueueRunsEveryPendingDownload(t *testing.T) {
 	if err := store.Save(paused); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	want = append(want, paused)
 
 	q := New(store, 2)
 	if err := q.Start(context.Background(), engine.Options{Connections: 4}); err != nil {
@@ -127,6 +129,22 @@ func TestQueueRunsEveryPendingDownload(t *testing.T) {
 		if !bytes.Equal(got, body) {
 			t.Fatalf("%s does not match the source", d.Dest)
 		}
+	}
+
+	// The held record is untouched: same status, same partial file still on
+	// disk with the bytes it had, and no destination published.
+	held, err := store.Load(paused.ID)
+	if err != nil {
+		t.Fatalf("load paused: %v", err)
+	}
+	if held.Status != state.StatusPaused {
+		t.Fatalf("paused download restarted itself: status = %q", held.Status)
+	}
+	if _, err := os.Stat(held.PartPath); err != nil {
+		t.Fatalf("a held download lost its partial file: %v", err)
+	}
+	if _, err := os.Stat(held.Dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a held download published a file to its destination")
 	}
 
 	// A second Start must be a no-op: nothing is left to do.
@@ -182,9 +200,10 @@ func TestQueueStopIsNotAFailure(t *testing.T) {
 		t.Fatalf("Start after Stop: %v", err)
 	}
 
-	// The record must be resumable: paused, with progress kept, and no file at
-	// the destination. "running" would strand the download, because the queue
-	// only ever picks up queued, paused and failed records.
+	// The record must survive as paused, with progress kept, and no file at
+	// the destination. "running" would strand it, because a record only ever
+	// starts when the queue reads it as queued - and a transfer the user
+	// stopped has to come back as something they must ask for again.
 	saved, err := store.Load(d.ID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -318,6 +337,312 @@ func safeSpeed(d *state.Download) int64 {
 		return -1
 	}
 	return d.SpeedLimit
+}
+
+// Pause has to hold.
+//
+// The scheduler is deliberately willing to start a paused record: that is what
+// lets a queue drain past one download, and what makes a record resumable after
+// a restart. So a pause that merely stops the current worker would be undone by
+// the very next pass, well under a second later, and the button would look
+// like it had done nothing at all.
+func TestPauseHoldsAgainstTheScheduler(t *testing.T) {
+	body := make([]byte, 4<<20)
+	for i := range body {
+		body[i] = byte(i * 13)
+	}
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "slow.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: int64(len(body)),
+		Segmented: true,
+		Segments:  state.PlanSegments(int64(len(body)), 4),
+		Status:    state.StatusQueued,
+		// One kilobyte a second, so the transfer is still under way long after
+		// the scheduler has had several chances to notice it stop.
+		SpeedLimit: 1024,
+		CreatedAt:  time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	q := New(store, 1)
+	go func() { _ = q.Start(ctx, engine.Options{Connections: 4}) }()
+	defer q.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !q.busy(d.ID) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !q.busy(d.ID) {
+		t.Fatal("the download never started")
+	}
+
+	if err := q.Pause(d.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Several scheduler passes rather than one, because one pass could be
+	// caught in the gap between stopping the worker and writing its record.
+	time.Sleep(1500 * time.Millisecond)
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Status != state.StatusPaused {
+		t.Fatalf("status = %q after Pause, want %q - the scheduler restarted it",
+			saved.Status, state.StatusPaused)
+	}
+	if q.busy(d.ID) {
+		t.Fatal("a paused download is still being transferred")
+	}
+	if saved.Completed() <= 0 {
+		t.Fatal("the pause discarded the progress it should have kept")
+	}
+}
+
+// A failure the user did not ask to retry has to wait for them.
+//
+// The scheduler started failed records on every pass, so a host that could not
+// be reached was retried as fast as the network could answer it: one probe
+// after another for as long as the app stayed open. Retry exists precisely
+// because retrying is a decision someone makes.
+func TestAFailedDownloadWaitsForRetry(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "no", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "never.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/never.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: 1 << 20,
+		Segments:  state.PlanSegments(1<<20, 4),
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	q := New(store, 1)
+	go func() { _ = q.Start(ctx, engine.Options{Connections: 4}) }()
+	defer q.Stop()
+
+	time.Sleep(1200 * time.Millisecond)
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Status != state.StatusFailed {
+		t.Fatalf("status = %q after a rejected transfer, want %q", saved.Status, state.StatusFailed)
+	}
+	if q.busy(d.ID) {
+		t.Fatal("the failed download is still being transferred")
+	}
+	if n := hits.Load(); n > 6 {
+		t.Fatalf("%d requests reached the server in one attempt window - the scheduler is retrying it", n)
+	}
+}
+
+// The list is the promise. A download moved up has to be the one the queue
+// starts next, not merely the one that moved inside the window.
+func TestMoveDecidesWhatRunsNext(t *testing.T) {
+	body := make([]byte, 400_000)
+	for i := range body {
+		body[i] = byte(i * 3)
+	}
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+
+	base := time.Now()
+	mk := func(name string, age time.Duration) *state.Download {
+		dest := filepath.Join(dir, name)
+		d := &state.Download{
+			ID:        state.NewID(),
+			URL:       srv.URL + "/file.bin",
+			Dest:      dest,
+			PartPath:  dest + ".part",
+			TotalSize: int64(len(body)),
+			Segmented: true,
+			Segments:  state.PlanSegments(int64(len(body)), 2),
+			Status:    state.StatusQueued,
+			// Spaced apart so the arrival order is a fact rather than a
+			// tiebreak the clock might settle either way.
+			CreatedAt: base.Add(age),
+		}
+		if err := store.Save(d); err != nil {
+			t.Fatalf("Save %s: %v", name, err)
+		}
+		return d
+	}
+	a := mk("a.bin", 0)
+	b := mk("b.bin", time.Second)
+	c := mk("c.bin", 2*time.Second)
+
+	q := New(store, 1)
+	if err := q.MoveUp(c.ID); err != nil {
+		t.Fatalf("first MoveUp: %v", err)
+	}
+	if err := q.MoveUp(c.ID); err != nil {
+		t.Fatalf("second MoveUp: %v", err)
+	}
+
+	if got, want := orderOf(q), []string{c.ID, a.ID, b.ID}; !equalIDs(got, want) {
+		t.Fatalf("list order = %v, want %v", got, want)
+	}
+
+	// Moving the first one up has nowhere to go, and says so as much rather
+	// than reporting a server fault.
+	if err := q.MoveUp(c.ID); !errors.Is(err, ErrAtEnd) {
+		t.Fatalf("MoveUp at the head = %v, want ErrAtEnd", err)
+	}
+	if err := q.MoveDown(b.ID); !errors.Is(err, ErrAtEnd) {
+		t.Fatalf("MoveDown at the foot = %v, want ErrAtEnd", err)
+	}
+
+	if err := q.Start(context.Background(), engine.Options{Connections: 4}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var ran []string
+	for _, ev := range q.Drain() {
+		if ev.Kind == "started" {
+			ran = append(ran, ev.ID)
+		}
+	}
+	if !equalIDs(ran, []string{c.ID, a.ID, b.ID}) {
+		t.Fatalf("ran in order %v, want %v", ran, []string{c.ID, a.ID, b.ID})
+	}
+}
+
+// A download set for later waits for its clock, and does not hold the queue
+// open in the meantime.
+func TestScheduleHoldsUntilItsTime(t *testing.T) {
+	body := make([]byte, 300_000)
+	for i := range body {
+		body[i] = byte(i * 11)
+	}
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "later.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: int64(len(body)),
+		Segmented: true,
+		Segments:  state.PlanSegments(int64(len(body)), 4),
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := New(store, 1)
+	future := time.Now().Add(time.Hour)
+	if err := q.Schedule(d.ID, &future); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	// Start has to come back on its own. If a future schedule were counted as
+	// work waiting for a slot, the loop would sit here until the clock came
+	// round - an hour of a caller that asked to drain the queue.
+	done := make(chan error, 1)
+	go func() { done <- q.Start(context.Background(), engine.Options{Connections: 4}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start is waiting for a download scheduled an hour from now")
+	}
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Status != state.StatusQueued {
+		t.Fatalf("status = %q, want the scheduled download left %q", saved.Status, state.StatusQueued)
+	}
+	if saved.StartsAt == nil || !saved.StartsAt.Equal(future) {
+		t.Fatalf("starts_at = %v, want %v", saved.StartsAt, future)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a download scheduled for an hour away downloaded now")
+	}
+
+	// Clearing the schedule is what makes it start.
+	if err := q.Schedule(d.ID, nil); err != nil {
+		t.Fatalf("clear schedule: %v", err)
+	}
+	if err := q.Start(context.Background(), engine.Options{Connections: 4}); err != nil {
+		t.Fatalf("Start after clearing: %v", err)
+	}
+	saved, err = store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Status != state.StatusDone {
+		t.Fatalf("status = %q after the schedule was cleared, want %q", saved.Status, state.StatusDone)
+	}
+	if saved.StartsAt != nil {
+		t.Fatal("the schedule was not cleared from the record")
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatal("the scheduled download does not match the source")
+	}
+}
+
+func orderOf(q *Queue) []string {
+	out := make([]string, 0, 4)
+	for _, s := range q.Snapshot() {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+func equalIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func seedPart(t *testing.T, path string, total int64, prefix []byte) {
