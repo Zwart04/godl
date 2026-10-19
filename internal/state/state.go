@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -51,6 +52,12 @@ type Download struct {
 	URL      string `json:"url"`
 	Dest     string `json:"dest"`
 	PartPath string `json:"part_path"`
+
+	// Category is the name of the kind of file this is, stored rather than
+	// re-derived so a record written before a category was renamed still
+	// answers with the name it was filed under. Empty means it predates
+	// categories, which reads as the catch-all rather than as an error.
+	Category string `json:"category,omitempty"`
 
 	TotalSize int64 `json:"total_size"`
 	// Segmented reports whether the server advertised Accept-Ranges. When false
@@ -245,4 +252,44 @@ func (s Store) Delete(id string) error {
 		return nil
 	}
 	return err
+}
+
+// UniquePath returns a path in dir that is free for both the finished file and
+// its `.part`, so adding a URL twice does not overwrite an earlier attempt.
+//
+// The name the user chose is kept where it can be: only once something already
+// sits there does the path gain a number. Counting every time would turn
+// "installer.exe" into "installer (3).exe" for no reason on a disk with room.
+//
+// It answers only against what is on disk, so two downloads added at the same
+// instant can still collide. The queue's record lock is what stops that in
+// practice, and a collision would be recoverable - the second file would
+// simply arrive beside the first rather than over it.
+func UniquePath(dir, name string) string {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+
+	for i := 0; ; i++ {
+		candidate := name
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		}
+		full := filepath.Join(dir, candidate)
+		if !Taken(full) {
+			return full
+		}
+	}
+}
+
+// Taken reports whether a finished file or a partial one already answers to
+// this path. A partial file counts: overwriting one would restart a transfer
+// that still believes it has progress to keep.
+func Taken(path string) bool {
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	if _, err := os.Stat(path + ".part"); err == nil {
+		return true
+	}
+	return false
 }

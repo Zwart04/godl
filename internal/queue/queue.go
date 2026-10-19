@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ type Snapshot struct {
 	ID             string          `json:"id"`
 	URL            string          `json:"url"`
 	Dest           string          `json:"dest"`
+	Category       string          `json:"category,omitempty"`
 	TotalSize      int64           `json:"total_size"`
 	Segmented      bool            `json:"segmented"`
 	Status         state.Status    `json:"status"`
@@ -396,6 +398,23 @@ func (q *Queue) claim(id string, stop context.CancelFunc) (*state.Download, *ent
 		return nil, nil, fmt.Errorf("download is %s, nothing to start", d.Status)
 	}
 
+	// The destination's folder may have gone since the record was written. A
+	// category folder is exactly the sort of thing someone tidies away, and
+	// making it again here means the download waits on nothing but the server.
+	//
+	// It is recorded as a failure rather than left queued: a folder that could
+	// not be created will not appear by the next pass either, and a record left
+	// queued is one the scheduler would try again and again for as long as the
+	// app stayed open - the same shape as a host that cannot be reached.
+	if dir := filepath.Dir(d.Dest); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			d.Status = state.StatusFailed
+			d.Error = "could not create the destination folder: " + err.Error()
+			_ = q.Store.Save(d)
+			return nil, nil, fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+
 	d.Status = state.StatusRunning
 	d.Error = ""
 	if err := q.Store.Save(d); err != nil {
@@ -408,6 +427,7 @@ func (q *Queue) claim(id string, stop context.CancelFunc) (*state.Download, *ent
 		ID:        d.ID,
 		URL:       d.URL,
 		Dest:      d.Dest,
+		Category:  d.Category,
 		TotalSize: d.TotalSize,
 		Segmented: d.Segmented,
 		Status:    state.StatusRunning,
@@ -536,6 +556,7 @@ func (q *Queue) Snapshot() []Snapshot {
 					ID:             d.ID,
 					URL:            d.URL,
 					Dest:           d.Dest,
+					Category:       d.Category,
 					TotalSize:      d.TotalSize,
 					Segmented:      d.Segmented,
 					Status:         d.Status,
@@ -729,6 +750,11 @@ func (q *Queue) Schedule(id string, at *time.Time) error {
 // record, not a fault in the server, so it is answered as a conflict.
 var ErrBusy = errors.New("the transfer did not stop in time; try again")
 
+// ErrInFlight is returned when something has to touch a file a worker is
+// holding open. It describes the transfer rather than the request, so the API
+// answers 409 for it instead of claiming the server broke.
+var ErrInFlight = errors.New("this download is transferring; stop it before changing where it belongs")
+
 // awaitIdle waits for a worker to finish writing its record.
 //
 // The caller is about to overwrite that record's status. Writing first would
@@ -743,6 +769,76 @@ func (q *Queue) awaitIdle(id string) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return ErrBusy
+}
+
+// SetCategory files a download under another category, and moves the file it
+// has gathered - or finished - into that category's folder.
+//
+// The queue owns this rather than the API because the record and the bytes on
+// disk have to move together, under the same lock that stops a worker writing
+// over them. The caller has already checked the name against its own list and
+// worked out where that category lives; this does not second-guess it.
+//
+// Disk is moved first. If the move fails, the record still points at where the
+// bytes really are - which is the only kind of wrong that cannot lose a file.
+// A destination out of date is recoverable; a file written over another is not.
+func (q *Queue) SetCategory(id, name, dir string) error {
+	q.recMu.Lock()
+	defer q.recMu.Unlock()
+
+	if q.Store == nil {
+		return errors.New("no store configured")
+	}
+	d, err := q.load(id)
+	if err != nil {
+		return err
+	}
+	// The worker has the file open, and Windows will not rename it. Saying so
+	// beats half-moving a transfer that is under way.
+	if d.Status == state.StatusRunning {
+		return ErrInFlight
+	}
+
+	// The file keeps the name it already had: a category is about what a thing
+	// is, not about calling it something else.
+	if d.Dest != "" && dir != filepath.Dir(d.Dest) {
+		dest := state.UniquePath(dir, filepath.Base(d.Dest))
+		part := dest + ".part"
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		// Whichever of the two exists is the one to move. A finished download
+		// has the file; a paused or failed one has the partial; one that never
+		// started has neither, and there is simply nothing to do.
+		if err := moveIfPresent(d.Dest, dest); err != nil {
+			return err
+		}
+		if err := moveIfPresent(d.PartPath, part); err != nil {
+			return err
+		}
+		d.Dest = dest
+		d.PartPath = part
+	}
+
+	d.Category = name
+	d.UpdatedAt = time.Now()
+	return q.Store.Save(d)
+}
+
+// moveIfPresent renames a file, treating "nothing is there" as success.
+func moveIfPresent(from, to string) error {
+	if from == "" || to == "" {
+		return nil
+	}
+	if _, err := os.Stat(from); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	// Rename, never copy. The folder is inside the same download directory, so
+	// this is one filesystem operation rather than a large file written twice.
+	return os.Rename(from, to)
 }
 
 // Cancel stops a download and discards the bytes it had gathered.

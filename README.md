@@ -73,10 +73,29 @@ implementation is not.
 - An endpoint left behind by a crashed run is verified with a real
   authenticated health check before being believed
 
+**Filing**
+- Seven built-in categories — Programs, Archives, Documents, Music, Video,
+  Pictures and a catch-all Other — each with its own folder under the download
+  directory
+- A new download is filed by its extension the moment the link arrives, so a
+  browser's own links need no input at all
+- Change a download's category and the file moves with it, into that folder,
+  without ever overwriting what is already there. A transfer under way is the
+  one exception: its file is open, so the change is refused rather than half
+  done
+- The list is yours to change. A `categories.json` beside the rest of godl's
+  state folds over the built-ins — an entry naming `.iso` makes ISOs a
+  category of their own, and one with a new name simply adds it. A file that
+  cannot be read falls back to the built-ins, because a settings file must
+  never be able to stop downloads landing somewhere
+- A category's folder is created when it is needed, including again if you
+  tidy it away while downloads still point at it
+
 **Interface**
 - A native desktop window, not a browser tab: its own process, its own taskbar
   entry, its own line in Task Manager
-- IDM-style columnar list — name, size, status, speed, time left, connections
+- IDM-style columnar list — name, category, size, status, speed, time left,
+  connections
 - Sortable columns, in-place row updates, keyboard shortcuts
 - Apple-inspired visual design: hairline rules, one accent colour, no chrome
   that is not doing work
@@ -152,6 +171,7 @@ Open **godl** from the Start Menu (or the desktop icon the setup created).
 | **Limit** | Caps how fast the selected download may transfer, from 128 KB/s up or a figure of your own. It takes effect on the transfer already running, not on the next one. |
 | **Arrows** | Move the selected download earlier or later in the queue. The queue starts them in that order. Pressing one drops a column sort, so you see the queue's own order — the one the arrows act on. |
 | **Schedule** | Says when this download may begin. A transfer already under way is stopped and held; a paused, failed or discarded one is put back in the queue for that time. An empty box means now, which is how a schedule is cleared. |
+| **Category chip** | The category in its own column, and the way to change it. Picking another moves the file into that folder's folder. A download running right now has its file open, so its chip is off. |
 | **Folder** | Opens Explorer with the finished file selected. |
 | **Delete** | Removes the record. |
 | **Close the window** | If transfers are running, you are asked first. In-flight ones are paused; queued ones start again on the next launch. |
@@ -220,6 +240,7 @@ token, one place where a button can be wrong.
 |---|---|
 | `internal/engine` | Segmented transfer, range planning, speed accounting, SHA-256 verification |
 | `internal/queue` | Scheduling, concurrency limits, status transitions |
+| `internal/category` | Category list, extension rules, folder names kept inside the download directory |
 | `internal/state` | On-disk records, atomic writes, recovery on start |
 | `internal/api` | The loopback HTTP control plane and the served interface |
 | `internal/host` | The native messaging protocol and its client |
@@ -237,6 +258,7 @@ A bearer token is created on first run and stored at
 |---|---|---|
 | `GET` | `/api/health` | Liveness check |
 | `GET` | `/api/downloads` | Every record with live progress |
+| `GET` | `/api/categories` | The categories in force, in the order they are shown |
 | `POST` | `/api/downloads` | Add a download |
 | `POST` | `/api/downloads/{id}/pause` | Pause |
 | `POST` | `/api/downloads/{id}/resume` | Resume |
@@ -246,6 +268,7 @@ A bearer token is created on first run and stored at
 | `POST` | `/api/downloads/{id}/schedule` | Say when this download may begin, or clear the schedule with an empty `starts_at` |
 | `POST` | `/api/downloads/{id}/move-up` | Move ahead of the download above it |
 | `POST` | `/api/downloads/{id}/move-down` | Move behind the download below it |
+| `POST` | `/api/downloads/{id}/category` | Put it in another category, moving its file |
 | `POST` | `/api/downloads/{id}/reveal` | Show in Explorer |
 | `DELETE` | `/api/downloads/{id}` | Remove the record |
 
@@ -256,6 +279,7 @@ A bearer token is created on first run and stored at
   "filename": "large.iso",       // optional; derived from the URL if absent
   "connections": 8,              // 1-32
   "speed_limit": 0,              // bytes per second; 0 means no cap
+  "category": "Programs",        // optional; the extension decides if absent
   "cookie": "session=…",         // forwarded verbatim
   "referer": "https://…",        // forwarded verbatim
   "user_agent": "…"              // forwarded verbatim
@@ -289,6 +313,37 @@ on the record.
 `move-up` and `move-down` swap places with a neighbour and are answered against
 queue order — the order the list shows unless a column sort is over it. Off
 either end they return `409`, which describes the list rather than a fault.
+
+`category` takes a name from `/api/categories`, and an unknown one is answered
+with the list it was checked against rather than a bare refusal:
+
+```jsonc
+// POST /api/downloads/0f3c1a9b7d2e4c5a/category
+{ "category": "Music" }
+```
+
+The file moves with it. It is refused with `409` while the download is
+transferring, because the worker holds the file open and Windows will not
+rename one that is — saying so beats half-moving a transfer that is under way.
+
+The categories themselves are the seven built-ins, folded over by a
+`categories.json` kept beside the rest of godl's state (`%APPDATA%\godl`, or
+`GODL_HOME` if you pointed it somewhere):
+
+```json
+[
+  { "name": "ISOs", "folder": "Disc Images", "extensions": ["iso", "img"] },
+  { "name": "Music", "extensions": ["mp3", "flac"] }
+]
+```
+
+Only what you want changed needs to be in that file: an entry whose name
+already exists replaces it, and one with a new name is added. Extensions are
+claimed by the entry that names them last, so adding `ISOs` above takes `.iso`
+away from Programs rather than being quietly ignored. A folder is a single
+directory name — anything looking like a path is rejected, so no entry can put
+a download outside the folder you chose. A file that cannot be read falls back
+to the built-ins.
 
 Progress is reported as:
 
@@ -395,7 +450,7 @@ godl/
 - [x] Single-file setup with install, shortcuts and uninstall
 - [x] Per-download speed limit, set when adding or moved while a transfer runs
 - [x] Queue ordering and a scheduled start
-- [ ] Download categories and folder rules
+- [x] Download categories and folder rules
 - [ ] Clipboard monitor for copied links
 
 ## License

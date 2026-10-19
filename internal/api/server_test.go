@@ -3,14 +3,17 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"godl/internal/category"
 	"godl/internal/queue"
 	"godl/internal/state"
 )
@@ -88,11 +91,12 @@ type addResponse struct {
 	Duplicate bool   `json:"duplicate"`
 	Error     string `json:"error"`
 	Download  struct {
-		ID   string       `json:"id"`
-		Dest string       `json:"dest"`
-		URL  string       `json:"url"`
-		Seg  bool         `json:"segmented"`
-		Stat state.Status `json:"status"`
+		ID       string       `json:"id"`
+		Dest     string       `json:"dest"`
+		URL      string       `json:"url"`
+		Seg      bool         `json:"segmented"`
+		Stat     state.Status `json:"status"`
+		Category string       `json:"category"`
 	} `json:"download"`
 }
 
@@ -124,6 +128,7 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		body   string
 	}{
 		{"list", http.MethodGet, "/api/downloads", ""},
+		{"categories", http.MethodGet, "/api/categories", ""},
 		{"health", http.MethodGet, "/api/health", ""},
 		{"add", http.MethodPost, "/api/downloads", `{"url":"http://127.0.0.1:9/x"}`},
 		{"pause", http.MethodPost, "/api/downloads/none/pause", ""},
@@ -132,6 +137,7 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		{"schedule", http.MethodPost, "/api/downloads/none/schedule", `{"starts_at":"2030-01-01T00:00:00Z"}`},
 		{"move-up", http.MethodPost, "/api/downloads/none/move-up", ""},
 		{"move-down", http.MethodPost, "/api/downloads/none/move-down", ""},
+		{"category", http.MethodPost, "/api/downloads/none/category", `{"category":"Music"}`},
 	}
 
 	for _, tc := range cases {
@@ -616,6 +622,198 @@ type orderedList struct {
 		ID       string     `json:"id"`
 		StartsAt *time.Time `json:"starts_at"`
 	} `json:"downloads"`
+}
+
+// seedDone puts a finished download on disk, as it is after a transfer
+// completed: both the record and the file it names really exist.
+func seedDone(t *testing.T, f *fixture, name, cat string) *state.Download {
+	t.Helper()
+	dir := filepath.Join(f.filesDir, cat)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dest := filepath.Join(dir, name)
+	const body = "the bytes that arrived"
+	if err := os.WriteFile(dest, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       "https://example.com/" + name,
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		Category:  cat,
+		Status:    state.StatusDone,
+		TotalSize: int64(len(body)),
+		CreatedAt: time.Now(),
+	}
+	if err := f.store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	return d
+}
+
+// The whole point of a category is that it decides where the file goes, so a
+// label that disagreed with the folder would be worse than no label at all.
+func TestCategoriesDecideWhereANewDownloadLands(t *testing.T) {
+	f := newFixture(t)
+	f.server.Categories = category.Defaults()
+	srv := ranged(t, bytes.Repeat([]byte("x"), 4096))
+
+	// Nothing said, which is the case for every link a browser hands over:
+	// the extension has to be enough.
+	rec, out := add(t, f, srv.URL+"/clip.mp4", "clip.mp4", 4)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if out.Download.Category != "Video" {
+		t.Errorf("category = %q, want Video chosen from the extension", out.Download.Category)
+	}
+	if want := filepath.Join(f.filesDir, "Video", "clip.mp4"); out.Download.Dest != want {
+		t.Errorf("dest = %q, want %q", out.Download.Dest, want)
+	}
+
+	// Said outright: the caller's choice wins, and is stored under the
+	// spelling the list uses rather than as it was sent - otherwise "  music "
+	// and "Music" would each become their own category once read back.
+	payload, err := json.Marshal(AddRequest{
+		URL:      srv.URL + "/track.mp3",
+		Filename: "track.mp3",
+		Category: "  music ",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec = call(t, f, http.MethodPost, "/api/downloads", testToken, string(payload))
+	var second addResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add with a category: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if second.Download.Category != "Music" {
+		t.Errorf("category = %q, want the list's spelling %q", second.Download.Category, "Music")
+	}
+	if want := filepath.Join(f.filesDir, "Music", "track.mp3"); second.Download.Dest != want {
+		t.Errorf("dest = %q, want %q", second.Download.Dest, want)
+	}
+}
+
+// A category that cannot be named is a request to put a file somewhere the
+// app has no rule for. The answer has to say what is on offer, because
+// "unknown category" alone leaves the caller guessing at seven names.
+func TestACategoryCanOnlyBeChosenFromWhatIsOffered(t *testing.T) {
+	f := newFixture(t)
+	f.server.Categories = category.Defaults()
+	srv := ranged(t, bytes.Repeat([]byte("x"), 4096))
+
+	payload, err := json.Marshal(AddRequest{
+		URL: srv.URL + "/a.zip", Filename: "a.zip", Category: "Things",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := call(t, f, http.MethodPost, "/api/downloads", testToken, string(payload))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("add with an unknown category: status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Music") {
+		t.Errorf("the refusal does not say what is on offer: %s", rec.Body.String())
+	}
+
+	d := seedDone(t, f, "book.pdf", "Documents")
+	rec = call(t, f, http.MethodPost, "/api/downloads/"+d.ID+"/category", testToken, `{"category":"Things"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("changing to an unknown category: status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Music") {
+		t.Errorf("the refusal does not say what is on offer: %s", rec.Body.String())
+	}
+	// A refused change changes nothing at all.
+	saved, err := f.store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Category != "Documents" {
+		t.Errorf("category = %q after a refused change, want it left alone", saved.Category)
+	}
+}
+
+// With no categories configured, saying so beats quietly filing the record
+// under a folder the build never offered.
+func TestChangingACategoryWithoutCategoriesSaysSo(t *testing.T) {
+	f := newFixture(t) // categories are deliberately unset
+	d := seedDone(t, f, "song.flac", "")
+
+	rec := call(t, f, http.MethodPost, "/api/downloads/"+d.ID+"/category", testToken, `{"category":"Music"}`)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 when this build has no categories", rec.Code)
+	}
+	saved, err := f.store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Dest != d.Dest {
+		t.Errorf("dest = %q, want a refused change to move nothing", saved.Dest)
+	}
+}
+
+// Changing a category has to move the file, not merely the label - a list
+// saying one thing and the folder another is the bug this avoids.
+func TestChangingACategoryMovesTheFileOnDisk(t *testing.T) {
+	f := newFixture(t)
+	f.server.Categories = category.Defaults()
+
+	d := seedDone(t, f, "song.flac", "Other")
+
+	rec := call(t, f, http.MethodPost, "/api/downloads/"+d.ID+"/category", testToken, `{"category":"Music"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("category: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	moved := filepath.Join(f.filesDir, "Music", "song.flac")
+	if _, err := os.Stat(moved); err != nil {
+		t.Fatalf("the file did not move: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.filesDir, "Other", "song.flac")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the file was left behind at its old path")
+	}
+
+	saved, err := f.store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Category != "Music" {
+		t.Errorf("category = %q, want %q", saved.Category, "Music")
+	}
+	if saved.Dest != moved {
+		t.Errorf("dest = %q, want the file's new home %q", saved.Dest, moved)
+	}
+}
+
+// The window draws this list, so it has to arrive in the order it will be
+// shown and end with the catch-all.
+func TestCategoriesAreServedForTheWindowToDraw(t *testing.T) {
+	f := newFixture(t)
+	f.server.Categories = category.Defaults()
+
+	rec := call(t, f, http.MethodGet, "/api/categories", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Categories []category.Category `json:"categories"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Categories) != len(category.Defaults()) {
+		t.Fatalf("got %d categories, want the %d configured", len(out.Categories), len(category.Defaults()))
+	}
+	if last := out.Categories[len(out.Categories)-1].Name; last != category.OtherName {
+		t.Errorf("last = %q, want the catch-all to be last", last)
+	}
 }
 
 func idsOf(rec *httptest.ResponseRecorder) []string {

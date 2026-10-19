@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"godl/internal/api"
+	"godl/internal/category"
 	"godl/internal/config"
 	"godl/internal/engine"
 	"godl/internal/queue"
@@ -115,6 +116,10 @@ func Start(o Options) (*Instance, error) {
 
 	srv := api.New(q, token)
 	srv.Connections = o.Connections
+	// Read once at start-up. A categories.json edited while the app is open is
+	// picked up next launch - reloading it per request would let a file being
+	// half-saved decide where a download lands.
+	srv.Categories = category.Load(config.Dir())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)

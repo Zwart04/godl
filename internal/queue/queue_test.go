@@ -388,6 +388,21 @@ func TestPauseHoldsAgainstTheScheduler(t *testing.T) {
 		t.Fatal("the download never started")
 	}
 
+	// And wait for a byte to have really moved. Pausing the instant the
+	// transfer is registered would leave the record with nothing to keep, and
+	// the assertion further down would then be about scheduling luck rather
+	// than about Pause - which is a flake, not a test.
+	//
+	// It is read from the live transfer rather than from disk: the record is
+	// written periodically, so disk would put the clock back into it.
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && progressOf(q, d.ID) <= 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := progressOf(q, d.ID); got <= 0 {
+		t.Fatalf("the download never moved a byte (progress = %d)", got)
+	}
+
 	if err := q.Pause(d.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -623,6 +638,299 @@ func TestScheduleHoldsUntilItsTime(t *testing.T) {
 	if !bytes.Equal(got, body) {
 		t.Fatal("the scheduled download does not match the source")
 	}
+}
+
+// A category is a claim about where a file belongs, so changing one has to
+// move the file, not merely the label. Nothing is written over: the new path
+// is worked out against what is really on disk before anything moves.
+func TestChangingACategoryMovesTheFileThatWasThere(t *testing.T) {
+	dir := t.TempDir()
+	other := filepath.Join(dir, "Other")
+	music := filepath.Join(dir, "Music")
+
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(other, "song.flac")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The bytes are already there, as they are for a finished download.
+	if err := os.WriteFile(dest, []byte("ID3 bytes"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       "https://example.com/song.flac",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		Category:  "Other",
+		Status:    state.StatusDone,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := New(store, 1)
+	if err := q.SetCategory(d.ID, "Music", music); err != nil {
+		t.Fatalf("SetCategory: %v", err)
+	}
+
+	moved := filepath.Join(music, "song.flac")
+	got, err := os.ReadFile(moved)
+	if err != nil {
+		t.Fatalf("the file did not move: %v", err)
+	}
+	if string(got) != "ID3 bytes" {
+		t.Fatalf("the move changed the contents to %q", got)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the file was left behind at its old path")
+	}
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Category != "Music" {
+		t.Errorf("category = %q, want %q", saved.Category, "Music")
+	}
+	if saved.Dest != moved {
+		t.Errorf("dest = %q, want the file's new home %q", saved.Dest, moved)
+	}
+	if saved.PartPath != moved+".part" {
+		t.Errorf("part_path = %q, want it beside the moved file", saved.PartPath)
+	}
+}
+
+// Nothing has been written yet for a download still waiting its turn, so
+// changing its category is a matter of rewriting where it will go.
+func TestChangingACategoryOfAQueuedDownloadTouchesNoFile(t *testing.T) {
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "Other", "setup.exe")
+
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       "https://example.com/setup.exe",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		Category:  "Other",
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := New(store, 1)
+	want := filepath.Join(dir, "Programs")
+	if err := q.SetCategory(d.ID, "Programs", want); err != nil {
+		t.Fatalf("SetCategory: %v", err)
+	}
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Dest != filepath.Join(want, "setup.exe") {
+		t.Errorf("dest = %q, want it under %q", saved.Dest, want)
+	}
+	if saved.Status != state.StatusQueued {
+		t.Errorf("status = %q, want a queued download to stay queued", saved.Status)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("an old path appeared where nothing had been written")
+	}
+}
+
+// The worker has the file open, and Windows will not rename a file that is
+// open. Refusing is the honest answer; half-moving a transfer under way is not.
+func TestChangingACategoryRefusesATransferUnderWay(t *testing.T) {
+	body := make([]byte, 4_000_000)
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "Other", "slow.bin")
+	// handleAdd creates the category's folder before writing the record; this
+	// is that, so the test is about the guard rather than about directories.
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		Category:  "Other",
+		TotalSize: int64(len(body)),
+		Segmented: true,
+		Segments:  state.PlanSegments(int64(len(body)), 4),
+		Status:    state.StatusQueued,
+		// Kept in flight long enough for the call to land mid-transfer.
+		SpeedLimit: 256 * 1024,
+		CreatedAt:  time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	q := New(store, 1)
+	done := make(chan error, 1)
+	go func() { done <- q.Start(ctx, engine.Options{Connections: 4}) }()
+
+	time.Sleep(150 * time.Millisecond)
+
+	// The refusal only means something if there really is a transfer to refuse
+	// for. Without this the test could pass or fail on a download that never
+	// started, which would say nothing at all about the guard.
+	before, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if before.Status != state.StatusRunning {
+		t.Fatalf("status = %q, want %q - the download was not running, so this proves nothing",
+			before.Status, state.StatusRunning)
+	}
+
+	err = q.SetCategory(d.ID, "Music", filepath.Join(dir, "Music"))
+	if !errors.Is(err, ErrInFlight) {
+		t.Fatalf("SetCategory while running = %v, want ErrInFlight", err)
+	}
+
+	// The refusal must leave the record exactly as it was. Writing part of it
+	// before noticing the transfer was running is what makes a half-moved
+	// download that no state can be resumed from.
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Dest != dest {
+		t.Errorf("dest = %q, want the refused call to leave it at %q", saved.Dest, dest)
+	}
+	if saved.Category != "Other" {
+		t.Errorf("category = %q, want the refused call to leave it alone", saved.Category)
+	}
+
+	q.Stop()
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start after Stop: %v", err)
+	}
+}
+
+// A category folder is exactly the sort of thing someone tidies away while
+// downloads still point at it. The download should simply make it again.
+func TestStartingADownloadRecreatesTheFolderItBelongsIn(t *testing.T) {
+	body := make([]byte, 100_000)
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "Programs", "app.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: int64(len(body)),
+		Segmented: true,
+		Segments:  state.PlanSegments(int64(len(body)), 4),
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := New(store, 1)
+	if err := q.Start(context.Background(), engine.Options{Connections: 4}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("the folder was not made again, so the download did not land: %v", err)
+	}
+}
+
+// A folder that cannot be created will not appear by the next pass either, so
+// the record has to be recorded as failed. Leaving it queued would have the
+// scheduler attempting it again for as long as the app stayed open - the same
+// shape as a host that cannot be reached, and just as pointless.
+func TestADownloadWhoseFolderCannotBeMadeFailsOnceNotForever(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "no", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+
+	// A plain file sitting where the category folder should be. MkdirAll
+	// cannot work past that, which is the whole point of this case.
+	blocked := filepath.Join(dir, "Programs")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	dest := filepath.Join(blocked, "app.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: 1 << 20,
+		Segments:  state.PlanSegments(1<<20, 4),
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	q := New(store, 1)
+	go func() { _ = q.Start(ctx, engine.Options{Connections: 4}) }()
+	defer q.Stop()
+
+	time.Sleep(1200 * time.Millisecond)
+
+	saved, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Status != state.StatusFailed {
+		t.Fatalf("status = %q, want %q - a queued record is one the scheduler keeps trying",
+			saved.Status, state.StatusFailed)
+	}
+	if saved.Error == "" {
+		t.Fatal("the failure was recorded without saying why")
+	}
+	if q.busy(d.ID) {
+		t.Fatal("the download is still being transferred")
+	}
+	if n := hits.Load(); n > 0 {
+		t.Fatalf("%d requests reached the server - it failed before ever opening a connection", n)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a file appeared somewhere it should not")
+	}
+}
+
+// progressOf reports how many bytes a download has really moved, read from the
+// live transfer rather than from the record - the record is written
+// periodically, so reading it would race the clock instead of asking the
+// transfer. It answers -1 for a download the queue has no live entry for.
+func progressOf(q *Queue, id string) int64 {
+	for _, s := range q.Snapshot() {
+		if s.ID == id {
+			return s.Progress.Done
+		}
+	}
+	return -1
 }
 
 func orderOf(q *Queue) []string {

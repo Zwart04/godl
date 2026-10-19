@@ -58,6 +58,14 @@ const ui = {
   scErr: $('sc-error'),
   scCancel: $('sc-cancel'),
   scOk: $('sc-ok'),
+  mCat: $('m-cat'),
+  mCatRow: $('m-cat-row'),
+  catModal: $('cat'),
+  ctWho: $('ct-who'),
+  ctWhere: $('ct-where'),
+  ctErr: $('ct-error'),
+  ctCancel: $('ct-cancel'),
+  ctOk: $('ct-ok'),
   toast: $('toast'),
 };
 
@@ -83,6 +91,29 @@ const LABEL = {
   failed: 'Failed',
   cancelled: 'Stopped',
 };
+
+/* The categories in force, read once at start-up. An empty list is how the
+ * manager says it files everything into one folder, and the interface then
+ * offers no control that would only come back refused. */
+let CATEGORIES = [];
+
+/* A record written before categories existed answers with nothing, and reads
+ * as the catch-all rather than as a gap - which is what the manager does with
+ * it too. */
+const categoryName = (d) => (d && d.category) || 'Other';
+
+/* Rebuilds both category menus from the one list, so what the add sheet offers
+ * and what the change sheet offers cannot drift apart. */
+function fillCategorySelects() {
+  ui.mCatRow.hidden = CATEGORIES.length === 0;
+
+  ui.mCat.textContent = '';
+  ui.mCat.add(new Option('Automatic (by extension)', ''));
+  for (const c of CATEGORIES) ui.mCat.add(new Option(c.name, c.name));
+
+  ui.ctWhere.textContent = '';
+  for (const c of CATEGORIES) ui.ctWhere.add(new Option(c.name, c.name));
+}
 
 const rows = new Map();   // id -> { el, ...cells }
 let items = [];           // last snapshot from the manager
@@ -238,6 +269,7 @@ function createRow(id) {
   // Static skeleton only; every dynamic string below is set via textContent.
   el.innerHTML =
     '<div class="cell name" role="cell"><div class="fname"></div><div class="furl"></div></div>' +
+    '<div class="cell cat" role="cell"><button class="chip" type="button"></button></div>' +
     '<div class="cell size" role="cell"></div>' +
     '<div class="cell status" role="cell"><span class="st-line">' +
       '<span class="st-text"></span><span class="st-cap" hidden></span></span>' +
@@ -250,6 +282,7 @@ function createRow(id) {
     el,
     fname: el.querySelector('.fname'),
     furl: el.querySelector('.furl'),
+    cat: el.querySelector('.chip'),
     size: el.querySelector('.cell.size'),
     st: el.querySelector('.st-text'),
     cap: el.querySelector('.st-cap'),
@@ -272,6 +305,14 @@ function updateRow(row, d) {
   row.fname.title = d.dest || '';
   row.furl.textContent = d.url || '';
   row.furl.title = d.url || '';
+
+  row.cat.textContent = categoryName(d);
+  row.cat.title = 'Filed under ' + categoryName(d) + '. Choose another to move the file.';
+  // A transfer under way has the file open, so the manager will refuse to move
+  // it; and with no categories configured there is nowhere to move it to.
+  // Both are facts already known here, so the control is simply off rather
+  // than being a click that only comes back refused.
+  row.cat.disabled = status === 'running' || CATEGORIES.length === 0;
 
   row.size.textContent = total > 0 ? size(total) : '—';
   row.fill.style.width = pct.toFixed(1) + '%';
@@ -318,6 +359,7 @@ function sortList(list) {
   if (!sortKey) return list;
   const cmp = {
     name: (a, b) => baseName(a.dest).localeCompare(baseName(b.dest), undefined, { numeric: true }),
+    cat: (a, b) => categoryName(a).localeCompare(categoryName(b)),
     size: (a, b) => (a.total_size || 0) - (b.total_size || 0),
     rate: (a, b) => speedOf(a) - speedOf(b),
     segs: (a, b) => (a.connections || 0) - (b.connections || 0),
@@ -447,6 +489,7 @@ function openModal() {
   ui.mErr.textContent = '';
   ui.url.value = '';
   ui.name.value = '';
+  ui.mCat.value = '';
   showLimit(ui.mLimit, ui.mLimitCustom, 0);
   setTimeout(() => ui.url.focus(), 40);
 }
@@ -486,6 +529,10 @@ async function submitAdd() {
         filename: ui.name.value.trim(),
         connections: Number(ui.seg.value) || 0,
         speed_limit: limit,
+        // Empty means "decide from the extension", which is the case for every
+        // link a browser hands over and the reason this is a choice rather
+        // than a step.
+        category: ui.mCat.value,
       }),
     });
     closeModal();
@@ -637,6 +684,63 @@ async function submitSchedule() {
   }
 }
 
+/* ── category sheet ─────────────────────────────────────────────────────── */
+
+function openCategory() {
+  const d = current();
+  if (!d) return;
+  ui.catModal.hidden = false;
+  ui.ctErr.hidden = true;
+  ui.ctErr.textContent = '';
+  ui.ctWho.textContent = d.dest || d.url || '';
+  ui.ctWho.title = d.dest || '';
+  // Offered rather than pre-selected, so a change is made on purpose. A menu
+  // already showing the current category would let Apply be pressed and then
+  // report that nothing had happened, which is a button that does not work.
+  ui.ctWhere.value = '';
+  setTimeout(() => ui.ctWhere.focus(), 40);
+}
+
+function closeCategory() {
+  ui.catModal.hidden = true;
+}
+
+function categoryError(message) {
+  ui.ctErr.textContent = message;
+  ui.ctErr.hidden = false;
+}
+
+async function submitCategory() {
+  if (!selected) return;
+
+  if (!ui.ctWhere.value) {
+    categoryError('Choose the category this download belongs in.');
+    ui.ctWhere.focus();
+    return;
+  }
+  // The name is sent as the list spells it, so the record never ends up
+  // carrying two spellings of the same category.
+  const picked = ui.ctWhere.value;
+
+  ui.ctOk.disabled = true;
+  ui.ctOk.textContent = 'Moving…';
+  try {
+    await api('/api/downloads/' + enc(selected) + '/category', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: picked }),
+    });
+    closeCategory();
+    toast('Moved to ' + picked + '.', false);
+    await refresh();
+  } catch (err) {
+    categoryError(err.message);
+  } finally {
+    ui.ctOk.disabled = false;
+    ui.ctOk.textContent = 'Move';
+  }
+}
+
 /* Shows the custom box only when "Custom" is chosen, and focuses it so the
  * next keystroke lands somewhere useful. */
 function wireLimitSelect(sel, custom) {
@@ -651,7 +755,13 @@ function wireLimitSelect(sel, custom) {
 
 ui.rows.addEventListener('click', (e) => {
   const row = e.target.closest('.row');
-  if (row) select(row.dataset.id);
+  if (!row) return;
+  select(row.dataset.id);
+  // Changing a category is done from the chip that shows it, so the control
+  // sits with the value it changes rather than in a bar that has no room left
+  // for an eleventh button.
+  const chip = e.target.closest('.chip');
+  if (chip && !chip.disabled) openCategory();
 });
 
 ui.add.addEventListener('click', openModal);
@@ -676,6 +786,11 @@ ui.schedModal.addEventListener('click', (e) => { if (e.target === ui.schedModal)
 ui.scOk.addEventListener('click', submitSchedule);
 ui.scWhen.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSchedule(); });
 
+ui.catModal.addEventListener('click', (e) => { if (e.target === ui.catModal) closeCategory(); });
+ui.ctCancel.addEventListener('click', closeCategory);
+ui.ctOk.addEventListener('click', submitCategory);
+ui.ctWhere.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCategory(); });
+
 wireLimitSelect(ui.mLimit, ui.mLimitCustom);
 wireLimitSelect(ui.lSpeed, ui.lSpeedCustom);
 
@@ -691,6 +806,10 @@ ui.remove.addEventListener('click', () => act('remove'));
 document.addEventListener('keydown', (e) => {
   // The sheets stack, so the one on top answers first - otherwise Escape
   // would close two of them at once and leave the caller unsure what changed.
+  if (!ui.catModal.hidden) {
+    if (e.key === 'Escape') closeCategory();
+    return;
+  }
   if (!ui.schedModal.hidden) {
     if (e.key === 'Escape') closeSchedule();
     return;
@@ -765,6 +884,19 @@ async function bootstrap() {
   } catch (_) {
     /* the list below reports connectivity more usefully than this would */
   }
+
+  // Once, not on every tick: the categories are a setting, and a file edited
+  // while the app runs is read again on the next launch. Failing here leaves
+  // the list empty, which is the same as a build that files everything into
+  // one folder - the controls are then simply not offered.
+  try {
+    const res = await api('/api/categories');
+    CATEGORIES = Array.isArray(res.categories) ? res.categories : [];
+  } catch (_) {
+    CATEGORIES = [];
+  }
+  fillCategorySelects();
+
   await refresh();
 }
 

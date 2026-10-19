@@ -77,6 +77,7 @@
   <div class="grid" role="table" aria-label="Downloads">
     <div class="head" role="row">
       <button class="th name" data-sort="name" role="columnheader">Name</button>
+      <button class="th cat" data-sort="cat" role="columnheader">Category</button>
       <button class="th size" data-sort="size" role="columnheader">Size</button>
       <button class="th status" role="columnheader">Status</button>
       <button class="th rate" data-sort="rate" role="columnheader">Rate</button>
@@ -110,6 +111,14 @@
     <label class="field">
       <span>Save as</span>
       <input id="m-name" type="text" spellcheck="false" autocomplete="off" placeholder="Automatic">
+    </label>
+
+    <!-- Filled from the manager's list at start-up, so the offer here and the
+         folders on disk cannot drift apart. Left on Automatic, the file's
+         extension decides - which is the case for every link a browser sends. -->
+    <label class="field" id="m-cat-row" hidden>
+      <span>Save in</span>
+      <select id="m-cat"></select>
     </label>
 
     <label class="field">
@@ -179,6 +188,26 @@
     <div class="sheet-actions">
       <button class="tool" id="sc-cancel" type="button">Cancel</button>
       <button class="tool primary" id="sc-ok" type="button">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="cat" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="ct-title">
+    <h2 id="ct-title">Category</h2>
+    <p class="sheet-note" id="ct-who"></p>
+
+    <div class="field">
+      <span>File this download under</span>
+      <select id="ct-where" class="wide"></select>
+      <p class="sheet-hint">The file moves to that folder's own folder. Nothing already there is overwritten.</p>
+    </div>
+
+    <p class="sheet-error" id="ct-error" hidden></p>
+
+    <div class="sheet-actions">
+      <button class="tool" id="ct-cancel" type="button">Cancel</button>
+      <button class="tool primary" id="ct-ok" type="button">Move</button>
     </div>
   </div>
 </div>

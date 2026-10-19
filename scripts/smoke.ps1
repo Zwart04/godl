@@ -241,8 +241,13 @@ $again = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '
 Check "limit set again" ($again.code -eq 200) "got $($again.code): $($again.body)"
 
 $filesDir = Join-Path $home2 "files"
-$dest = Join-Path $filesDir "payload.bin"
+# Taken from the manager rather than built here. A file whose extension no
+# category claims lands in the catch-all, and a path assembled by the test
+# would be asserting its own guess instead of the shipped behaviour.
+$dest = ($add.body | ConvertFrom-Json).download.dest
 $part = $dest + ".part"
+Check "unclaimed extension filed under Other" ($dest -match '[\\/]Other[\\/]') "dest=$dest"
+Check "file stays under the download directory" ($dest.StartsWith($filesDir)) "dest=$dest, dir=$filesDir"
 
 $done = Wait-For "download" 90000 {
     $l = Invoke-Api "/api/downloads" "GET" $true $null
@@ -344,6 +349,53 @@ $finished2 = Wait-For "second download to finish" 40000 {
 }
 Check "scheduled download completed whole" ([bool]$finished2) "did not reach done in 40s"
 Check "scheduled download landed" (Test-Path $added2.dest) "no file at $($added2.dest)"
+
+# ── 3d. categories sort files into folders ──────────────────────────────────
+$dlDir = ((Invoke-Api "/api/health" "GET" $true $null).body | ConvertFrom-Json).download_dir
+Check "download directory reported" ([bool]$dlDir) "health named no download_dir"
+
+$catsBody = (Invoke-Api "/api/categories" "GET" $true $null).body
+$catNames = @(($catsBody | ConvertFrom-Json).categories | ForEach-Object { $_.name })
+Check "categories are served" ($catNames.Count -ge 2) "got $($catNames.Count): $catsBody"
+Check "the catch-all is last" ($catNames[-1] -eq "Other") "last was $($catNames[-1])"
+
+# The window draws this, so it has to be there before anything is clicked.
+Check "page offers a category column" ($page.Content -match 'class="th cat"') "no category header in the served page"
+Check "page offers the category sheet" ($page.Content -match 'id="ct-ok"') "no category sheet in the served page"
+
+# A name that says what it is has to land where that says it goes. The label
+# alone would not be worth anything.
+$musicAdd = Invoke-Api "/api/downloads" "POST" $true ('{"url":"http://127.0.0.1:' + $originPort + '/song.mp3","filename":"song.mp3","connections":2}')
+Check "music download accepted" ($musicAdd.code -eq 201) "got $($musicAdd.code): $($musicAdd.body)"
+$musicRec = ($musicAdd.body | ConvertFrom-Json).download
+Check "music download is categorised" ($musicRec.category -eq "Music") "category=$($musicRec.category)"
+Check "music download filed under Music" ($musicRec.dest -match '[\\/]Music[\\/]') "dest=$($musicRec.dest)"
+# The folder is joined to a path the user chose, so a name that escaped it
+# would put a download somewhere else on the machine entirely.
+Check "category folder stays under the download directory" ($musicRec.dest.StartsWith($dlDir)) "dest=$($musicRec.dest), dir=$dlDir"
+
+# A category that is not on the list is a request to file something where no
+# rule exists. It is refused before the server is contacted, which is why this
+# costs no transfer.
+$badCat = Invoke-Api "/api/downloads" "POST" $true ('{"url":"http://127.0.0.1:' + $originPort + '/weird.xyz","filename":"weird.xyz","category":"Things"}')
+Check "unknown category refused" ($badCat.code -eq 400) "got $($badCat.code): $($badCat.body)"
+
+# Changing one has to move the file. A list saying Music while the file sat in
+# Programs would be the bug this avoids - but only once nothing holds it open.
+$musicDone = Wait-For "music download to finish" 40000 {
+    $d = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads |
+        Where-Object { $_.id -eq $musicRec.id }
+    if ($d -and $d.status -eq 'done') { 'done' } else { $null }
+}
+Check "music download completed" ([bool]$musicDone) "did not reach done in 40s"
+
+$mvCat = Invoke-Api ("/api/downloads/" + $musicRec.id + "/category") "POST" $true '{"category":"Documents"}'
+Check "category change accepted" ($mvCat.code -eq 200) "got $($mvCat.code): $($mvCat.body)"
+$musicAfter = ($mvCat.body | ConvertFrom-Json).download
+Check "category change recorded" ($musicAfter.category -eq "Documents") "category=$($musicAfter.category)"
+Check "category change moved the file" ($musicAfter.dest -match '[\\/]Documents[\\/]') "dest=$($musicAfter.dest)"
+Check "the moved file exists" (Test-Path $musicAfter.dest) "not found: $($musicAfter.dest)"
+Check "the old file is gone" (-not (Test-Path $musicRec.dest)) "still at $($musicRec.dest)"
 
 # ── screenshot with a real row on screen ───────────────────────────────────
 try {

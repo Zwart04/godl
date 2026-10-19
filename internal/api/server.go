@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"godl/internal/category"
 	"godl/internal/config"
 	"godl/internal/engine"
 	"godl/internal/queue"
@@ -53,6 +54,10 @@ type Server struct {
 
 	// DownloadDir receives new downloads when the caller names no path.
 	DownloadDir string
+	// Categories sorts a new download into a folder by what it is, and backs
+	// the list the window offers. An empty list means categories are off and
+	// everything lands in DownloadDir directly.
+	Categories []category.Category
 	// Connections is the segment count used when a request does not say.
 	Connections int
 	// ProbeTimeout bounds the probe done before a download is queued. It is
@@ -110,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("GET /api/health", s.authed(http.HandlerFunc(s.handleHealth)))
 	mux.Handle("GET /api/downloads", s.authed(http.HandlerFunc(s.handleList)))
+	mux.Handle("GET /api/categories", s.authed(http.HandlerFunc(s.handleCategories)))
 	mux.Handle("POST /api/downloads", s.authed(http.HandlerFunc(s.handleAdd)))
 
 	mux.Handle("POST /api/downloads/{id}/pause", s.authed(s.action("pause", func(q *queue.Queue, id string) error {
@@ -136,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	})))
 	mux.Handle("POST /api/downloads/{id}/speed-limit", s.authed(http.HandlerFunc(s.handleSpeedLimit)))
 	mux.Handle("POST /api/downloads/{id}/schedule", s.authed(http.HandlerFunc(s.handleSchedule)))
+	mux.Handle("POST /api/downloads/{id}/category", s.authed(http.HandlerFunc(s.handleCategory)))
 	mux.Handle("POST /api/downloads/{id}/move-up", s.authed(s.action("move-up", func(q *queue.Queue, id string) error {
 		return q.MoveUp(id)
 	})))
@@ -212,10 +219,13 @@ type AddRequest struct {
 	Connections int    `json:"connections"`
 	// SpeedLimit is a bytes-per-second ceiling for this download alone.
 	// Zero, or an omitted field, means no ceiling.
-	SpeedLimit int64  `json:"speed_limit"`
-	Cookie     string `json:"cookie"`
-	Referer    string `json:"referer"`
-	UserAgent  string `json:"user_agent"`
+	SpeedLimit int64 `json:"speed_limit"`
+	// Category names where this should land. Left empty, the file's extension
+	// decides - which is the case for every link a browser offers.
+	Category  string `json:"category"`
+	Cookie    string `json:"cookie"`
+	Referer   string `json:"referer"`
+	UserAgent string `json:"user_agent"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +242,23 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.SpeedLimit < 0 {
 		writeErr(w, http.StatusBadRequest, "a speed limit cannot be negative; send 0 for no limit")
 		return
+	}
+
+	// A category the caller named is checked before the server is contacted.
+	// It costs nothing to answer here, and a request that cannot be honoured
+	// should not spend a probe finding that out.
+	wantCat := strings.TrimSpace(req.Category)
+	if wantCat != "" {
+		if len(s.Categories) == 0 {
+			writeErr(w, http.StatusNotImplemented, "this build puts every download in one folder; there are no categories to choose from")
+			return
+		}
+		matched, ok := s.categoryName(wantCat)
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "unknown category; choose one of: "+s.categoryNames())
+			return
+		}
+		wantCat = matched
 	}
 
 	// A double-click must not queue the same file twice.
@@ -267,15 +294,21 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		name = "download"
 	}
 
-	dir := s.DownloadDir
-	if dir == "" {
-		dir = config.FilesDir()
+	// Sorted by what the file is, unless the caller already knows - and that
+	// answer was made above, before the server was contacted. Doing it here,
+	// before the destination is picked, keeps the folder and the category the
+	// same decision made once rather than two that could drift apart.
+	cat := wantCat
+	if cat == "" && len(s.Categories) > 0 {
+		cat = category.Assign(s.Categories, name)
 	}
+
+	dir := s.folderFor(cat)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		writeErr(w, http.StatusInternalServerError, "could not create the download directory: "+err.Error())
 		return
 	}
-	dest := uniquePath(dir, name)
+	dest := state.UniquePath(dir, name)
 
 	n := s.Connections
 	if req.Connections > 0 {
@@ -295,6 +328,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		URL:           req.URL,
 		Dest:          dest,
 		PartPath:      dest + ".part",
+		Category:      cat,
 		TotalSize:     probe.TotalSize,
 		Segmented:     probe.Segmented,
 		ETag:          probe.ETag,
@@ -441,6 +475,102 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
 }
 
+// handleCategories is the list the window offers, in the order it shows them.
+//
+// It is served rather than built into the page so a categories.json can change
+// what a download is sorted into without the interface having to be rebuilt.
+func (s *Server) handleCategories(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"categories": s.Categories})
+}
+
+// folderFor names the directory a category's files land in, below the
+// download directory.
+//
+// With no categories configured the download directory itself is returned,
+// which is where everything landed before any of this existed.
+func (s *Server) folderFor(name string) string {
+	dir := s.DownloadDir
+	if dir == "" {
+		dir = config.FilesDir()
+	}
+	if len(s.Categories) == 0 {
+		return dir
+	}
+	return filepath.Join(dir, category.FolderFor(s.Categories, name))
+}
+
+// categoryName matches a requested name against the list, and answers with the
+// spelling the list uses.
+//
+// Matching rather than storing what was sent keeps one name per category on
+// disk. "music", "Music" and " MUSIC " would otherwise each become their own
+// entry the first time the records were read back and drawn.
+func (s *Server) categoryName(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	for _, c := range s.Categories {
+		if strings.EqualFold(c.Name, raw) {
+			return c.Name, true
+		}
+	}
+	return "", false
+}
+
+// categoryNames lists what is on offer, for a message when a name is refused.
+func (s *Server) categoryNames() string {
+	names := make([]string, 0, len(s.Categories))
+	for _, c := range s.Categories {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// handleCategory puts a download in another category, and moves its file.
+//
+// It is not routed through action(): a category is not a transition between
+// states, and the state guard it would apply - "is this one running?" - is the
+// queue's to make, because only the queue knows whether the worker has the
+// file open.
+func (s *Server) handleCategory(w http.ResponseWriter, r *http.Request) {
+	// The record is checked before its body is read: a caller who cannot
+	// change this one cannot fix that by sending a better-shaped payload.
+	id := r.PathValue("id")
+	if _, ok := s.find(id); !ok {
+		writeErr(w, http.StatusNotFound, "no such download")
+		return
+	}
+	if len(s.Categories) == 0 {
+		writeErr(w, http.StatusNotImplemented, "this build puts every download in one folder; there are no categories to choose from")
+		return
+	}
+
+	var req struct {
+		Category string `json:"category"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	name, ok := s.categoryName(req.Category)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unknown category; choose one of: "+s.categoryNames())
+		return
+	}
+
+	if err := s.Queue.SetCategory(id, name, s.folderFor(name)); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, queue.ErrInFlight) {
+			code = http.StatusConflict
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	next, _ := s.find(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
+}
+
 func (s *Server) find(id string) (queue.Snapshot, bool) {
 	for _, snap := range s.Queue.Snapshot() {
 		if snap.ID == id {
@@ -562,34 +692,6 @@ func sanitizeFilename(name string) string {
 		return "_" + name
 	}
 	return name
-}
-
-// uniquePath picks a destination that is free for both the finished file and
-// its .part, so adding a URL twice does not overwrite an earlier attempt.
-func uniquePath(dir, name string) string {
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-
-	for i := 0; ; i++ {
-		candidate := name
-		if i > 0 {
-			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		}
-		full := filepath.Join(dir, candidate)
-		if !taken(full) {
-			return full
-		}
-	}
-}
-
-func taken(path string) bool {
-	if _, err := os.Stat(path); err == nil {
-		return true
-	}
-	if _, err := os.Stat(path + ".part"); err == nil {
-		return true
-	}
-	return false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
