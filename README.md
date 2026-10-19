@@ -87,8 +87,8 @@ implementation is not.
 
 ## Install
 
-Grab **[`godl-setup.exe`](../../releases/latest)** and run it. That is the
-entire installation.
+Grab **[`godl-setup.exe`](https://github.com/Zwart04/godl/releases/latest)**
+and run it. That is the entire installation.
 
 It copies `godl.exe` and `godl-host.exe` into
 `%LOCALAPPDATA%\Programs\godl`, creates Start Menu and desktop shortcuts,
