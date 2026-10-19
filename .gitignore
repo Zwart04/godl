@@ -1,0 +1,32 @@
+# Built programs.
+#
+# `wails build` and `go build` recreate all of these in seconds, and they are
+# large enough that committing them would dominate the repository's history.
+# The source assets they are built from - build/appicon.png and
+# build/windows/icon.ico - are tracked; the binaries are not.
+*.exe
+
+# Wails' generated JavaScript bindings. Regenerated on every build, and this
+# project has no npm step that would need them checked in.
+frontend/wailsjs/
+
+# The installer's payload, packed fresh by build-setup.ps1 on every build.
+# The source of it is build/bin, which is already ignored above.
+cmd/godl-setup/payload/*.zip
+
+# Go build and test artefacts.
+*.test
+*.out
+*.prof
+coverage.*
+
+# Scratch space some of the verification scripts use.
+*.part
+*.log
+
+# Editor and operating-system noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

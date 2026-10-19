@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "godl",
+  "version": "1.0.0",
+  "description": "Sends downloads from this browser to godl, your download manager.",
+
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2uzoXoJZT7IZBxMfd+Uvi++OXs716UPj80DC3316nG9yRsKbCwAQmgz5PJLMri6GYxDuAK7jlPjOF3DDhRv8nPx5ws5MpgA5JRJ3DsGiW6DSdrfRErkEdK5Vjk3Xr8rHjz3nXwta3G5SJy6prig4+aKuo5hX/bxREDTTjGkUwolA73jqKtvyaFGNItpXO7XB8q1Uf5OKURg91E57nrMykrN9YxvBF2a88pfo4izOSsyaAjVg28rGlonfgQGtgbblloup7vTrjUqzACi1q2lN43pY5CkLv+FLcDqAgtdJxpT60+/aU2kybK8zp91uEAeTAalQuTUbZk+1HHLW55G6WQIDAQAB",
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "permissions": [
+    "nativeMessaging",
+    "downloads",
+    "cookies",
+    "storage",
+    "contextMenus"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+
+  "minimum_chrome_version": "116"
+}

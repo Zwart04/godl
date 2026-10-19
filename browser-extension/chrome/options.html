@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>godl</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+
+<main class="sheet">
+
+  <header class="head">
+    <img src="icons/48.png" alt="" width="40" height="40">
+    <div>
+      <h1>godl</h1>
+      <p class="sub">Downloads from this browser are handed to the godl app on this computer.</p>
+    </div>
+  </header>
+
+  <section class="group">
+    <label class="row switch">
+      <span class="label">
+        <strong>Send downloads to godl</strong>
+        <em>Turn this off to keep downloads in the browser and use right-click instead.</em>
+      </span>
+      <input id="intercept" type="checkbox">
+      <i aria-hidden="true"></i>
+    </label>
+
+    <label class="row">
+      <span class="label">
+        <strong>Only these file types</strong>
+        <em>Comma or space separated, for example <code>zip, iso, mp4</code>. Leave empty for everything.</em>
+      </span>
+      <input id="extensions" type="text" spellcheck="false" autocomplete="off" placeholder="All file types">
+    </label>
+
+    <label class="row">
+      <span class="label">
+        <strong>Connections per download</strong>
+        <em>How many parts godl splits a file into. Servers that refuse this fall back to one.</em>
+      </span>
+      <select id="connections">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="8">8</option>
+        <option value="16">16</option>
+        <option value="32">32</option>
+      </select>
+    </label>
+  </section>
+
+  <section class="group">
+    <div class="row">
+      <span class="label">
+        <strong>Connection</strong>
+        <em id="status">Checking&hellip;</em>
+      </span>
+      <button id="test" type="button">Test</button>
+    </div>
+  </section>
+
+  <p class="note" id="error" hidden></p>
+
+</main>
+
+<script src="options.js"></script>
+</body>
+</html>

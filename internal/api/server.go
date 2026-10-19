@@ -1,0 +1,482 @@
+// Package api serves the local control API and the graphical page that drives
+// it.
+//
+// Everything binds to loopback and every call carries the install token. That
+// matters: without a header the browser's own same-origin policy would still
+// stop a hostile page from reading responses, but it would happily let one
+// *write* - a form or a fetch can change state without reading it. Requiring a
+// header the page cannot obtain cross-origin closes that hole.
+package api
+
+import (
+	"context"
+	"crypto/subtle"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"godl/internal/config"
+	"godl/internal/engine"
+	"godl/internal/queue"
+	"godl/internal/state"
+)
+
+//go:embed web
+var webFiles embed.FS
+
+// Version is reported to the UI and to the native messaging host. It is a var
+// so a release build can stamp it without touching the package.
+var Version = config.Version
+
+// tokenPlaceholder is swapped for the real token when index.html is served.
+const tokenPlaceholder = "__GODL_TOKEN__"
+
+// Server is the control plane: a JSON API plus the page that drives it.
+type Server struct {
+	Queue *queue.Queue
+	Token string
+
+	// Client transfers bytes, so it must carry no overall Timeout: a limit
+	// there would abort a healthy download that simply takes a while.
+	Client *http.Client
+
+	// DownloadDir receives new downloads when the caller names no path.
+	DownloadDir string
+	// Connections is the segment count used when a request does not say.
+	Connections int
+	// ProbeTimeout bounds the probe done before a download is queued. It is
+	// applied to the probe context, not to the transfer client.
+	ProbeTimeout time.Duration
+
+	mu    sync.Mutex
+	once  sync.Once
+	web   fs.FS
+	shell string
+	prep  error
+}
+
+// New builds a server with defaults suited to a local manager.
+func New(q *queue.Queue, token string) *Server {
+	return &Server{
+		Queue:        q,
+		Token:        token,
+		Client:       &http.Client{},
+		DownloadDir:  config.FilesDir(),
+		Connections:  8,
+		ProbeTimeout: 30 * time.Second,
+	}
+}
+
+// prepare loads the embedded page once and bakes the token into it.
+func (s *Server) prepare() error {
+	s.once.Do(func() {
+		sub, err := fs.Sub(webFiles, "web")
+		if err != nil {
+			s.prep = fmt.Errorf("embedded web assets: %w", err)
+			return
+		}
+		raw, err := fs.ReadFile(sub, "index.html")
+		if err != nil {
+			s.prep = fmt.Errorf("embedded index.html: %w", err)
+			return
+		}
+		s.web = sub
+		// The token goes into the page itself: the UI runs same-origin, so it
+		// can set the Authorization header, while a cross-origin page never
+		// gets to see this document at all.
+		s.shell = strings.ReplaceAll(string(raw), tokenPlaceholder, s.Token)
+	})
+	return s.prep
+}
+
+// Handler wires the routes.
+func (s *Server) Handler() http.Handler {
+	if err := s.prepare(); err != nil {
+		panic("api: " + err.Error())
+	}
+
+	mux := http.NewServeMux()
+
+	mux.Handle("GET /api/health", s.authed(http.HandlerFunc(s.handleHealth)))
+	mux.Handle("GET /api/downloads", s.authed(http.HandlerFunc(s.handleList)))
+	mux.Handle("POST /api/downloads", s.authed(http.HandlerFunc(s.handleAdd)))
+
+	mux.Handle("POST /api/downloads/{id}/pause", s.authed(s.action("pause", func(q *queue.Queue, id string) error {
+		return q.Pause(id)
+	})))
+	mux.Handle("POST /api/downloads/{id}/resume", s.authed(s.action("resume", func(q *queue.Queue, id string) error {
+		return q.Resume(id)
+	})))
+	mux.Handle("POST /api/downloads/{id}/retry", s.authed(s.action("retry", func(q *queue.Queue, id string) error {
+		return q.Retry(id)
+	})))
+	mux.Handle("POST /api/downloads/{id}/cancel", s.authed(s.action("cancel", func(q *queue.Queue, id string) error {
+		return q.Cancel(id)
+	})))
+	mux.Handle("DELETE /api/downloads/{id}", s.authed(s.action("remove", func(q *queue.Queue, id string) error {
+		return q.Remove(id)
+	})))
+	mux.Handle("POST /api/downloads/{id}/reveal", s.authed(s.action("reveal", func(q *queue.Queue, id string) error {
+		d, err := q.Store.Load(id)
+		if err != nil {
+			return err
+		}
+		return reveal(d.Dest)
+	})))
+
+	mux.Handle("GET /app.js", s.staticFile("app.js", "text/javascript; charset=utf-8"))
+	mux.Handle("GET /app.css", s.staticFile("app.css", "text/css; charset=utf-8"))
+	mux.Handle("GET /", http.HandlerFunc(s.serveIndex))
+
+	return mux
+}
+
+// authed rejects any call that does not present the install token.
+func (s *Server) authed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+		got = strings.TrimSpace(got)
+		if s.Token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) != 1 {
+			writeErr(w, http.StatusUnauthorized, "missing or incorrect token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	// Anything that is not the page itself falls through to a 404 rather than
+	// handing back HTML for a script that expected data.
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'")
+	io.WriteString(w, s.shell)
+}
+
+func (s *Server) staticFile(name, contentType string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := fs.ReadFile(s.web, name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(raw)
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"version":      Version,
+		"running":      s.Queue.Running(),
+		"download_dir": s.DownloadDir,
+	})
+}
+
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"downloads": s.Queue.Snapshot()})
+}
+
+// AddRequest is what the UI and the browser host send when a link arrives.
+type AddRequest struct {
+	URL         string `json:"url"`
+	Filename    string `json:"filename"`
+	Connections int    `json:"connections"`
+	Cookie      string `json:"cookie"`
+	Referer     string `json:"referer"`
+	UserAgent   string `json:"user_agent"`
+}
+
+func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
+	var req AddRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if !isHTTPURL(req.URL) {
+		writeErr(w, http.StatusBadRequest, "only http and https URLs can be downloaded")
+		return
+	}
+
+	// A double-click must not queue the same file twice.
+	for _, snap := range s.Queue.Snapshot() {
+		if snap.URL == req.URL && snap.Status != state.StatusDone && snap.Status != state.StatusCancelled {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true, "download": snap})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.probeTimeout())
+	defer cancel()
+
+	hints := engine.Hints{Cookie: req.Cookie, Referer: req.Referer, UserAgent: req.UserAgent}
+	probe, err := engine.Probe(ctx, s.Client, req.URL, hints)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "could not reach the server: "+err.Error())
+		return
+	}
+	if probe.TotalSize <= 0 {
+		writeErr(w, http.StatusNotImplemented, "the server did not report a size; streaming downloads are not supported yet")
+		return
+	}
+
+	name := sanitizeFilename(req.Filename)
+	if name == "" {
+		name = sanitizeFilename(probe.Name)
+	}
+	if name == "" {
+		name = sanitizeFilename(nameFromURL(req.URL))
+	}
+	if name == "" {
+		name = "download"
+	}
+
+	dir := s.DownloadDir
+	if dir == "" {
+		dir = config.FilesDir()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not create the download directory: "+err.Error())
+		return
+	}
+	dest := uniquePath(dir, name)
+
+	n := s.Connections
+	if req.Connections > 0 {
+		n = req.Connections
+	}
+	if n < 1 {
+		n = 1
+	}
+	if !probe.Segmented {
+		// IDM's own advice when a server cannot resume: fall back to one
+		// connection rather than pretending otherwise.
+		n = 1
+	}
+
+	d := &state.Download{
+		ID:            state.NewID(),
+		URL:           req.URL,
+		Dest:          dest,
+		PartPath:      dest + ".part",
+		TotalSize:     probe.TotalSize,
+		Segmented:     probe.Segmented,
+		ETag:          probe.ETag,
+		LastModified:  probe.LastModified,
+		SuggestedName: probe.Name,
+		Segments:      state.PlanSegments(probe.TotalSize, n),
+		Status:        state.StatusQueued,
+		CreatedAt:     time.Now(),
+		Cookie:        req.Cookie,
+		Referer:       req.Referer,
+		UserAgent:     req.UserAgent,
+	}
+	if err := s.Queue.Store.Save(d); err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not save the download: "+err.Error())
+		return
+	}
+	s.Queue.Kick()
+
+	snap, _ := s.find(d.ID)
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "download": snap})
+}
+
+// action wraps a queue mutation with an existence check and a transition
+// check, so a stray call cannot e.g. re-queue a download that already finished.
+func (s *Server) action(name string, fn func(*queue.Queue, string) error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		cur, ok := s.find(id)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "no such download")
+			return
+		}
+		if !actionAllowed(name, cur.Status) {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("cannot %s a download that is %s", name, cur.Status))
+			return
+		}
+		if err := fn(s.Queue, id); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if name == "resume" || name == "retry" {
+			s.Queue.Kick()
+		}
+		next, _ := s.find(id)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
+	})
+}
+
+func (s *Server) find(id string) (queue.Snapshot, bool) {
+	for _, snap := range s.Queue.Snapshot() {
+		if snap.ID == id {
+			return snap, true
+		}
+	}
+	return queue.Snapshot{}, false
+}
+
+func (s *Server) probeTimeout() time.Duration {
+	if s.ProbeTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return s.ProbeTimeout
+}
+
+// actionAllowed lists the states each control accepts. Anything not listed is
+// rejected rather than silently applied to a download that is somewhere else.
+func actionAllowed(action string, status state.Status) bool {
+	switch action {
+	case "pause":
+		return status == state.StatusRunning || status == state.StatusQueued
+	case "resume":
+		return status == state.StatusPaused
+	case "retry":
+		return status == state.StatusFailed
+	case "cancel":
+		return status != state.StatusDone && status != state.StatusCancelled
+	case "remove":
+		return true
+	case "reveal":
+		// Opening a folder changes nothing, so every state answers.
+		return true
+	}
+	return false
+}
+
+// reveal asks the shell to select the file inside its folder, which is how a
+// download manager normally answers "where did that go?".
+//
+// The whole destination goes to explorer as one argument: a path with spaces
+// would otherwise be split and the folder would fail to open. explorer also
+// reports a nonzero exit code on perfectly ordinary success, so the command is
+// started and abandoned instead of being waited on.
+func reveal(dest string) error {
+	if strings.TrimSpace(dest) == "" {
+		return errors.New("this download has no destination recorded yet")
+	}
+	dir := filepath.Dir(dest)
+	if _, err := os.Stat(dir); err != nil {
+		return errors.New("the download folder does not exist yet")
+	}
+	return exec.Command("explorer.exe", "/select,"+dest).Start()
+}
+
+func isHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
+}
+
+// nameFromURL takes the last path segment, without a query or fragment.
+func nameFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	base := u.Path
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	return base
+}
+
+// sanitizeFilename reduces a name that came from a server or a browser to one
+// safe path element: no separators, no traversal, nothing Windows reserves.
+func sanitizeFilename(name string) string {
+	if i := strings.LastIndexAny(name, "/\\"); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f,
+			r == '/', r == '\\', r == ':', r == '*', r == '?',
+			r == '"', r == '<', r == '>', r == '|':
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, " .")
+	if name == "" {
+		return ""
+	}
+	// Windows refuses these stems whatever the extension, and also treats a
+	// trailing dot as invisible.
+	stem := name
+	if i := strings.IndexByte(stem, '.'); i > 0 {
+		stem = stem[:i]
+	}
+	upper := strings.ToUpper(stem)
+	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" ||
+		(len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) &&
+			upper[3] >= '1' && upper[3] <= '9') {
+		return "_" + name
+	}
+	return name
+}
+
+// uniquePath picks a destination that is free for both the finished file and
+// its .part, so adding a URL twice does not overwrite an earlier attempt.
+func uniquePath(dir, name string) string {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+
+	for i := 0; ; i++ {
+		candidate := name
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		}
+		full := filepath.Join(dir, candidate)
+		if !taken(full) {
+			return full
+		}
+	}
+}
+
+func taken(path string) bool {
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	if _, err := os.Stat(path + ".part"); err == nil {
+		return true
+	}
+	return false
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]any{"ok": false, "error": msg})
+}
+
+// IsNotFound reports whether the error means "no such record", which the UI
+// shows as a refresh rather than an error banner.
+func IsNotFound(err error) bool { return errors.Is(err, fs.ErrNotExist) }

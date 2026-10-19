@@ -1,0 +1,15 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "godl",
+  "outputfilename": "godl",
+  "author": {
+    "name": "godl"
+  },
+  "frontend:dir": "frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:install": "",
+  "frontend:dev:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": ""
+}
