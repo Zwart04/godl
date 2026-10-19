@@ -69,4 +69,7 @@ Check "manifest removed"   (-not (Test-Path $manifestPath)) "still present"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Write-Output ""
 Write-Output "RESULT  $pass passed, $fail failed"
-if ($fail -gt 0) { exit 1 }
+# The success path has to exit explicitly. Falling off the end leaves
+# $LASTEXITCODE at whatever the last native command happened to return, so a
+# caller checking it would see a number that says nothing about this run.
+if ($fail -gt 0) { exit 1 } else { exit 0 }

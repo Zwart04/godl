@@ -154,7 +154,11 @@ func TestQueueStopIsNotAFailure(t *testing.T) {
 		Segmented: true,
 		Segments:  state.PlanSegments(int64(len(body)), 4),
 		Status:    state.StatusQueued,
-		CreatedAt: time.Now(),
+		// Throttled on the record, which is how a real limit reaches the
+		// engine: it keeps the transfer in flight long enough for Stop to
+		// land mid-flight rather than after the file has finished.
+		SpeedLimit: 256 * 1024,
+		CreatedAt:  time.Now(),
 	}
 	if err := store.Save(d); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -165,8 +169,9 @@ func TestQueueStopIsNotAFailure(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		// Throttled so the run is still in flight when Stop lands.
-		done <- q.Start(ctx, engine.Options{Connections: 4, SpeedLimitBytesPerSec: 256 * 1024})
+		// The throttle lives on the record above, so this exercises the same
+		// path a user's setting takes.
+		done <- q.Start(ctx, engine.Options{Connections: 4})
 	}()
 
 	time.Sleep(150 * time.Millisecond)
@@ -193,6 +198,126 @@ func TestQueueStopIsNotAFailure(t *testing.T) {
 	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("a paused download published a file to the destination")
 	}
+}
+
+// A ceiling belongs to the record, but the control the interface offers is
+// only useful if it bites on the transfer already running. This asserts both
+// halves: that the new value reaches disk, and that the running worker starts
+// obeying it without being restarted.
+func TestSpeedLimitCanBeChangedWhileTheTransferRuns(t *testing.T) {
+	body := make([]byte, 400_000)
+	for i := range body {
+		body[i] = byte(i % 251)
+	}
+	srv := rangedServer(t, body)
+
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+	dest := filepath.Join(dir, "capped.bin")
+	d := &state.Download{
+		ID:        state.NewID(),
+		URL:       srv.URL + "/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: int64(len(body)),
+		Segmented: true,
+		Segments:  state.PlanSegments(int64(len(body)), 4),
+		Status:    state.StatusQueued,
+		// One byte per second. The transfer cannot finish while this holds,
+		// which is what makes the assertions below deterministic.
+		SpeedLimit: 1,
+		CreatedAt:  time.Now(),
+	}
+	if err := store.Save(d); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := New(store, 1)
+
+	waitFor := func(what string, timeout time.Duration, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	lookup := func(id string) (Snapshot, bool) {
+		for _, s := range q.Snapshot() {
+			if s.ID == id {
+				return s, true
+			}
+		}
+		return Snapshot{}, false
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- q.Start(context.Background(), engine.Options{Connections: 4}) }()
+
+	waitFor("the transfer to start", 5*time.Second, func() bool { return q.liveEntry(d.ID) != nil })
+
+	e := q.liveEntry(d.ID)
+	if got := e.limit.Get(); got != 1 {
+		t.Fatalf("running ceiling = %d, want the record's 1", got)
+	}
+	if snap, ok := lookup(d.ID); !ok || snap.SpeedLimit != 1 {
+		t.Fatalf("snapshot speed_limit = %v/%d, want 1", ok, snap.SpeedLimit)
+	}
+
+	// Move it. The record must follow, and so must the bucket the worker
+	// actually draws from.
+	if err := q.SetLimit(d.ID, 512*1024); err != nil {
+		t.Fatalf("SetLimit: %v", err)
+	}
+	if got := e.limit.Get(); got != 512*1024 {
+		t.Fatalf("running ceiling after SetLimit = %d, want %d: the change did not reach the worker", got, 512*1024)
+	}
+	if saved, err := store.Load(d.ID); err != nil || saved.SpeedLimit != 512*1024 {
+		t.Fatalf("record after SetLimit = %v/%d, want 512*1024", err, safeSpeed(saved))
+	}
+	if snap, ok := lookup(d.ID); !ok || snap.SpeedLimit != 512*1024 {
+		t.Fatalf("snapshot after SetLimit = %v/%d, want %d", ok, snap.SpeedLimit, 512*1024)
+	}
+
+	// Lifting the ceiling must be what lets it finish - proof that the running
+	// worker is reading the value rather than the one it was launched with.
+	if err := q.SetLimit(d.ID, 0); err != nil {
+		t.Fatalf("SetLimit(0): %v", err)
+	}
+	if err := <-runDone; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	final, err := store.Load(d.ID)
+	if err != nil {
+		t.Fatalf("Load after completion: %v", err)
+	}
+	if final.Status != state.StatusDone {
+		t.Fatalf("status = %q, want %q: the download never finished, so lifting the ceiling did nothing",
+			final.Status, state.StatusDone)
+	}
+	if final.SpeedLimit != 0 {
+		t.Fatalf("recorded speed_limit = %d, want 0", final.SpeedLimit)
+	}
+	got, err := os.ReadFile(final.Dest)
+	if err != nil {
+		t.Fatalf("read %s: %v", final.Dest, err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatal("the file does not match the source after the limit was moved")
+	}
+}
+
+// safeSpeed reports a download's limit without dereferencing a nil record, so
+// the assertions above stay readable when the load itself failed.
+func safeSpeed(d *state.Download) int64 {
+	if d == nil {
+		return -1
+	}
+	return d.SpeedLimit
 }
 
 func seedPart(t *testing.T, path string, total int64, prefix []byte) {

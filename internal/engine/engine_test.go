@@ -495,15 +495,74 @@ func TestTruncatedTransferFailsThenResumes(t *testing.T) {
 }
 
 func TestLimiterRefusesWorkAfterCancellation(t *testing.T) {
-	lim := newLimiter(1024)
+	lim := newLimiter(NewLimit(1024))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := lim.Wait(ctx, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Wait after cancellation = %v, want context.Canceled", err)
 	}
-	// Unlimited transfers must never block or fail.
-	fast := newLimiter(0)
-	if err := fast.Wait(context.Background(), 1<<40); err != nil {
+	// Unlimited transfers must never block or fail - neither when the ceiling
+	// is explicitly zero nor when the caller set none at all.
+	for name, l := range map[string]*limiter{
+		"zero": newLimiter(NewLimit(0)),
+		"nil":  newLimiter(nil),
+	} {
+		if err := l.Wait(context.Background(), 1<<40); err != nil {
+			t.Fatalf("%s Wait = %v, want nil", name, err)
+		}
+	}
+}
+
+// The whole point of Limit being a handle rather than a number is that moving
+// it must affect a transfer already under way. If this ever regresses, a user
+// who lowers the ceiling mid-download sees the number change in the interface
+// and the rate stay exactly where it was.
+func TestLimitCanBeMovedWhileATransferIsWaiting(t *testing.T) {
+	lim := NewLimit(0)
+	bucket := newLimiter(lim)
+
+	if err := bucket.Wait(context.Background(), 1<<30); err != nil {
 		t.Fatalf("unlimited Wait = %v, want nil", err)
+	}
+
+	// Impose a ceiling far below the chunk. The same bucket must now block
+	// instead of letting those bytes through.
+	lim.Set(1)
+	limited, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	if err := bucket.Wait(limited, 1<<20); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait under a 1 byte/s ceiling = %v, want context.DeadlineExceeded", err)
+	}
+
+	// Lifting it again releases the very same wait, without rebuilding it.
+	lim.Set(0)
+	if err := bucket.Wait(context.Background(), 1<<30); err != nil {
+		t.Fatalf("Wait after lifting the ceiling = %v, want nil", err)
+	}
+}
+
+func TestLimitNormalisesWhatCannotBeHonoured(t *testing.T) {
+	if got := NewLimit(-5).Get(); got != 0 {
+		t.Fatalf("NewLimit(-5).Get() = %d, want 0: a negative rate cannot be honoured", got)
+	}
+	if got := (*Limit)(nil).Get(); got != 0 {
+		t.Fatalf("nil Limit.Get() = %d, want 0 so a missing ceiling means unlimited", got)
+	}
+
+	l := NewLimit(256 * 1024)
+	l.Set(-1)
+	if got := l.Get(); got != 0 {
+		t.Fatalf("Set(-1) left %d, want 0", got)
+	}
+	l.Set(1024 * 1024)
+	if got := l.Get(); got != 1024*1024 {
+		t.Fatalf("Get() = %d, want %d", got, 1024*1024)
+	}
+
+	// A nil handle must be safe to call, because Options.Limit is optional.
+	var none *Limit
+	none.Set(999)
+	if got := none.Get(); got != 0 {
+		t.Fatalf("Set on a nil Limit changed it to %d, want it to stay unlimited", got)
 	}
 }

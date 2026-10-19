@@ -280,11 +280,29 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Zero so it can shrink beside a cap instead of pushing the row taller. */
+  min-width: 0;
 }
 
 .st-text.err { color: var(--red); }
 .st-text.done { color: var(--green); font-weight: 550; }
 .st-text.run { color: var(--accent); font-weight: 550; }
+
+/* The label and its cap share one line, so showing a cap never grows the row
+   or costs the list a line of visible downloads. */
+.st-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.st-cap {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
 
 .track {
   height: 3px;
@@ -414,12 +432,29 @@ kbd {
 
 .field select { width: 90px; }
 
+/* The speed limit list reads as text, not as a number to compare, so it needs
+   the room the connection count does not. */
+.field select.wide { width: 150px; }
+
+.field .custom { margin-top: 8px; }
+
 .field input:focus, .field select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(0, 113, 227, .16);
 }
 
 .field input::placeholder { color: var(--text-3); }
+
+/* Names the download a control applies to. Long ones ellipsize rather than
+   widen the sheet, which would otherwise follow a path off the screen. */
+.sheet-note {
+  margin: -8px 0 14px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .sheet-error {
   margin: 0 0 12px;

@@ -171,8 +171,9 @@ type Options struct {
 	Connections int
 	// HTTPClient overrides the runner's client.
 	HTTPClient *http.Client
-	// SpeedLimitBytesPerSec throttles the whole download. 0 means unlimited.
-	SpeedLimitBytesPerSec int64
+	// Limit caps this transfer as a whole. Nil means no ceiling. It is read
+	// on every wait, so it may be moved while the transfer is running.
+	Limit *Limit
 	// Progress, when set, is kept up to date while the transfer runs so a
 	// watcher can read it from another goroutine.
 	Progress *Progress
@@ -227,7 +228,7 @@ func (r *Runner) Run(ctx context.Context, d *state.Download, opt Options) (*Repo
 	// download would appear to start over.
 	prog.Seed(d.Completed())
 
-	lim := newLimiter(opt.SpeedLimitBytesPerSec)
+	lim := newLimiter(opt.Limit)
 	start := time.Now()
 
 	if err := r.runSegments(ctx, client, d, f, lim, prog, n); err != nil {

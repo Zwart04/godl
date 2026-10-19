@@ -72,6 +72,11 @@ type Download struct {
 	// Filename the server proposed, kept so we never guess blindly.
 	SuggestedName string `json:"suggested_name,omitempty"`
 
+	// SpeedLimit is this download's own ceiling in bytes per second. Zero
+	// means no ceiling. It is stored rather than applied once because the
+	// transfer it belongs to may outlive the window where it was set.
+	SpeedLimit int64 `json:"speed_limit,omitempty"`
+
 	Segments []Segment `json:"segments"`
 	Status   Status    `json:"status"`
 	Error    string    `json:"error,omitempty"`

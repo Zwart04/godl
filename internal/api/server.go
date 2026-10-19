@@ -134,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		return reveal(d.Dest)
 	})))
+	mux.Handle("POST /api/downloads/{id}/speed-limit", s.authed(http.HandlerFunc(s.handleSpeedLimit)))
 
 	mux.Handle("GET /app.js", s.staticFile("app.js", "text/javascript; charset=utf-8"))
 	mux.Handle("GET /app.css", s.staticFile("app.css", "text/css; charset=utf-8"))
@@ -202,9 +203,12 @@ type AddRequest struct {
 	URL         string `json:"url"`
 	Filename    string `json:"filename"`
 	Connections int    `json:"connections"`
-	Cookie      string `json:"cookie"`
-	Referer     string `json:"referer"`
-	UserAgent   string `json:"user_agent"`
+	// SpeedLimit is a bytes-per-second ceiling for this download alone.
+	// Zero, or an omitted field, means no ceiling.
+	SpeedLimit int64  `json:"speed_limit"`
+	Cookie     string `json:"cookie"`
+	Referer    string `json:"referer"`
+	UserAgent  string `json:"user_agent"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +220,10 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	req.URL = strings.TrimSpace(req.URL)
 	if !isHTTPURL(req.URL) {
 		writeErr(w, http.StatusBadRequest, "only http and https URLs can be downloaded")
+		return
+	}
+	if req.SpeedLimit < 0 {
+		writeErr(w, http.StatusBadRequest, "a speed limit cannot be negative; send 0 for no limit")
 		return
 	}
 
@@ -291,6 +299,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		Cookie:        req.Cookie,
 		Referer:       req.Referer,
 		UserAgent:     req.UserAgent,
+		SpeedLimit:    req.SpeedLimit,
 	}
 	if err := s.Queue.Store.Save(d); err != nil {
 		writeErr(w, http.StatusInternalServerError, "could not save the download: "+err.Error())
@@ -326,6 +335,39 @@ func (s *Server) action(name string, fn func(*queue.Queue, string) error) http.H
 		next, _ := s.find(id)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
 	})
+}
+
+// handleSpeedLimit moves this download's ceiling.
+//
+// It is deliberately not routed through action(): that helper exists to reject
+// a transition that does not apply to the current state, and a speed limit is
+// not a transition. Lowering one while the transfer runs is the case the
+// control exists for, so refusing it in every state but that one would make it
+// useless.
+func (s *Server) handleSpeedLimit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SpeedLimit int64 `json:"speed_limit"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.SpeedLimit < 0 {
+		writeErr(w, http.StatusBadRequest, "a speed limit cannot be negative; send 0 for no limit")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := s.find(id); !ok {
+		writeErr(w, http.StatusNotFound, "no such download")
+		return
+	}
+	if err := s.Queue.SetLimit(id, req.SpeedLimit); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	next, _ := s.find(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
 }
 
 func (s *Server) find(id string) (queue.Snapshot, bool) {

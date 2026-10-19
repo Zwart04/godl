@@ -38,8 +38,11 @@ type Options struct {
 	// Connections is the segment count a new download asks for. Servers that
 	// refuse ranges are still given one, regardless of this.
 	Connections int
-	// SpeedLimitBytesPerSec caps total traffic. Zero means no cap.
-	SpeedLimitBytesPerSec int64
+
+	// Speed limits are per download, not per manager, and are stored on each
+	// record - see state.Download.SpeedLimit. A manager-wide cap would need
+	// one bucket shared by every transfer, and nothing yet asks for one, so
+	// there is deliberately no field here pretending otherwise.
 }
 
 // ErrAlreadyRunning reports that another manager owns this directory.
@@ -116,10 +119,7 @@ func Start(o Options) (*Instance, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	go func() {
-		runDone <- q.Run(ctx, engine.Options{
-			Connections:           o.Connections,
-			SpeedLimitBytesPerSec: o.SpeedLimitBytesPerSec,
-		})
+		runDone <- q.Run(ctx, engine.Options{Connections: o.Connections})
 	}()
 
 	// This listener is what the browser's host talks to. The window has its

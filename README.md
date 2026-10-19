@@ -138,6 +138,7 @@ Open **godl** from the Start Menu (or the desktop icon the setup created).
 | **Add** | Opens a sheet to paste a URL, name the file, and choose a connection count. <kbd>Ctrl</kbd>+<kbd>N</kbd>. |
 | **Pause / Resume** | Stops a transfer where it is and picks it back up later. Both survive closing the app. |
 | **Stop** | Abandons the transfer and discards the partial file. |
+| **Limit** | Caps how fast the selected download may transfer, from 128 KB/s up or a figure of your own. It takes effect on the transfer already running, not on the next one. |
 | **Folder** | Opens Explorer with the finished file selected. |
 | **Delete** | Removes the record. |
 | **Close the window** | If transfers are running, you are asked first. In-flight ones are paused; queued ones start again on the next launch. |
@@ -228,6 +229,7 @@ A bearer token is created on first run and stored at
 | `POST` | `/api/downloads/{id}/resume` | Resume |
 | `POST` | `/api/downloads/{id}/retry` | Retry after a failure |
 | `POST` | `/api/downloads/{id}/cancel` | Stop and discard the partial file |
+| `POST` | `/api/downloads/{id}/speed-limit` | Cap this download, or clear the cap with `0` |
 | `POST` | `/api/downloads/{id}/reveal` | Show in Explorer |
 | `DELETE` | `/api/downloads/{id}` | Remove the record |
 
@@ -237,10 +239,19 @@ A bearer token is created on first run and stored at
   "url": "https://example.com/large.iso",
   "filename": "large.iso",       // optional; derived from the URL if absent
   "connections": 8,              // 1-32
+  "speed_limit": 0,              // bytes per second; 0 means no cap
   "cookie": "session=…",         // forwarded verbatim
   "referer": "https://…",        // forwarded verbatim
   "user_agent": "…"              // forwarded verbatim
 }
+```
+
+`speed-limit` takes the same field and is accepted in any state — including one
+that is transferring right now, which is the reason it exists:
+
+```jsonc
+// POST /api/downloads/0f3c1a9b7d2e4c5a/speed-limit
+{ "speed_limit": 1048576 }       // 1 MB/s; 0 removes the cap
 ```
 
 Progress is reported as:
@@ -251,6 +262,7 @@ Progress is reported as:
   "status": "running",
   "segmented": true,
   "connections": 8,
+  "speed_limit": 1048576,
   "total_size": 33554432,
   "progress": { "done": 16777216, "total": 33554432, "percent": 50.0, "speed": 4123568.0 }
 }
@@ -344,7 +356,7 @@ godl/
 - [x] Native messaging host with automatic manager startup
 - [x] Browser extension for Chrome, Edge and Firefox
 - [x] Single-file setup with install, shortcuts and uninstall
-- [ ] Per-download speed limit from the interface
+- [x] Per-download speed limit, set when adding or moved while a transfer runs
 - [ ] Queue ordering and a scheduled start
 - [ ] Download categories and folder rules
 - [ ] Clipboard monitor for copied links

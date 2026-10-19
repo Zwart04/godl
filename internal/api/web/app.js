@@ -30,17 +30,41 @@ const ui = {
   pause: $('t-pause'),
   resume: $('t-resume'),
   stop: $('t-stop'),
+  limit: $('t-limit'),
   reveal: $('t-reveal'),
   remove: $('t-remove'),
   modal: $('modal'),
   url: $('m-url'),
   name: $('m-name'),
   seg: $('m-seg'),
+  mLimit: $('m-limit'),
+  mLimitCustom: $('m-limit-custom'),
   mErr: $('m-error'),
   mCancel: $('m-cancel'),
   mOk: $('m-ok'),
+  limitModal: $('limit'),
+  lWho: $('l-who'),
+  lSpeed: $('l-speed'),
+  lSpeedCustom: $('l-speed-custom'),
+  lErr: $('l-error'),
+  lCancel: $('l-cancel'),
+  lOk: $('l-ok'),
   toast: $('toast'),
 };
+
+/* The offer, in bytes per second. Both menus are built from this one list so
+ * they cannot drift into offering different speeds for the same button. */
+const LIMITS = [
+  [0, 'No limit'],
+  [128 * 1024, '128 KB/s'],
+  [512 * 1024, '512 KB/s'],
+  [1024 * 1024, '1 MB/s'],
+  [5 * 1024 * 1024, '5 MB/s'],
+  [10 * 1024 * 1024, '10 MB/s'],
+];
+/* Sentinel for the "type your own" row. Kept negative so it can never be
+ * mistaken for a real ceiling, which the server would reject anyway. */
+const CUSTOM = -1;
 
 const LABEL = {
   queued: 'Queued',
@@ -120,6 +144,43 @@ function baseName(path) {
 
 const enc = (s) => encodeURIComponent(s);
 
+/* ── speed limits ──────────────────────────────────────────────────────── */
+
+function fillLimitSelect(sel) {
+  sel.textContent = '';
+  for (const [bps, label] of LIMITS) {
+    const opt = document.createElement('option');
+    opt.value = String(bps);
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = String(CUSTOM);
+  custom.textContent = 'Custom…';
+  sel.appendChild(custom);
+}
+
+/* Shows one ceiling in a menu, reaching for "Custom" when it is not a preset.
+ * Without that branch a limit typed last week would snap silently to the
+ * nearest preset the next time anything about the download was saved. */
+function showLimit(sel, custom, bps) {
+  const preset = LIMITS.some(([v]) => v === bps);
+  sel.value = preset ? String(bps) : String(CUSTOM);
+  custom.hidden = sel.value !== String(CUSTOM);
+  custom.value = preset ? '' : String(Math.max(1, Math.round((bps || 0) / 1024)));
+}
+
+/* Reads a menu back into bytes per second, or null when "Custom" is chosen
+ * with nothing usable in the box. Returning null instead of zero keeps "the
+ * user has not said" apart from "no limit", which is what zero means. */
+function readLimit(sel, custom) {
+  const v = Number(sel.value);
+  if (v !== CUSTOM) return v;
+  const kbps = Number(custom.value);
+  if (!isFinite(kbps) || kbps <= 0) return null;
+  return Math.round(kbps * 1024);
+}
+
 /* ── rows ──────────────────────────────────────────────────────────────── */
 
 function createRow(id) {
@@ -131,7 +192,8 @@ function createRow(id) {
   el.innerHTML =
     '<div class="cell name" role="cell"><div class="fname"></div><div class="furl"></div></div>' +
     '<div class="cell size" role="cell"></div>' +
-    '<div class="cell status" role="cell"><span class="st-text"></span>' +
+    '<div class="cell status" role="cell"><span class="st-line">' +
+      '<span class="st-text"></span><span class="st-cap" hidden></span></span>' +
       '<span class="track"><i></i></span></div>' +
     '<div class="cell rate" role="cell"></div>' +
     '<div class="cell eta" role="cell"></div>' +
@@ -143,6 +205,7 @@ function createRow(id) {
     furl: el.querySelector('.furl'),
     size: el.querySelector('.cell.size'),
     st: el.querySelector('.st-text'),
+    cap: el.querySelector('.st-cap'),
     fill: el.querySelector('.track i'),
     rate: el.querySelector('.cell.rate'),
     eta: el.querySelector('.cell.eta'),
@@ -184,6 +247,15 @@ function updateRow(row, d) {
   row.rate.textContent = live ? size(p.speed) + '/s' : '—';
   row.eta.textContent = etaFor(d);
   row.segs.textContent = d.connections > 0 ? String(d.connections) : '—';
+
+  // A cap is worth seeing even when the transfer is stopped, because that is
+  // when the user goes looking for why it was slow last time.
+  const capped = (d.speed_limit || 0) > 0;
+  row.cap.hidden = !capped;
+  if (capped) {
+    row.cap.textContent = size(d.speed_limit) + '/s cap';
+    row.cap.title = 'Capped at ' + size(d.speed_limit) + ' per second. Change it with Limit.';
+  }
 }
 
 /* ── ordering ──────────────────────────────────────────────────────────── */
@@ -282,6 +354,9 @@ function syncToolbar() {
   ui.pause.disabled = !(st === 'running' || st === 'queued');
   ui.resume.disabled = !(st === 'paused' || st === 'failed');
   ui.stop.disabled = !(st !== null && st !== 'done' && st !== 'cancelled');
+  // A finished or discarded download has no transfer left to throttle; the
+  // server would accept the change and it would mean nothing.
+  ui.limit.disabled = !(st !== null && st !== 'done' && st !== 'cancelled');
   ui.reveal.disabled = !d;
   ui.remove.disabled = !d;
 }
@@ -308,6 +383,7 @@ function openModal() {
   ui.mErr.textContent = '';
   ui.url.value = '';
   ui.name.value = '';
+  showLimit(ui.mLimit, ui.mLimitCustom, 0);
   setTimeout(() => ui.url.focus(), 40);
 }
 
@@ -328,6 +404,13 @@ async function submitAdd() {
     return;
   }
 
+  const limit = readLimit(ui.mLimit, ui.mLimitCustom);
+  if (limit === null) {
+    sheetError('Enter a custom speed in kilobytes per second, or pick a preset.');
+    ui.mLimitCustom.focus();
+    return;
+  }
+
   ui.mOk.disabled = true;
   ui.mOk.textContent = 'Adding…';
   try {
@@ -338,6 +421,7 @@ async function submitAdd() {
         url,
         filename: ui.name.value.trim(),
         connections: Number(ui.seg.value) || 0,
+        speed_limit: limit,
       }),
     });
     closeModal();
@@ -350,6 +434,70 @@ async function submitAdd() {
     ui.mOk.disabled = false;
     ui.mOk.textContent = 'Download';
   }
+}
+
+/* ── limit sheet ───────────────────────────────────────────────────────── */
+
+function openLimit() {
+  const d = current();
+  if (!d) return;
+  ui.limitModal.hidden = false;
+  ui.lErr.hidden = true;
+  ui.lErr.textContent = '';
+  ui.lWho.textContent = d.dest || d.url || '';
+  ui.lWho.title = d.dest || '';
+  showLimit(ui.lSpeed, ui.lSpeedCustom, d.speed_limit || 0);
+  setTimeout(() => ui.lSpeed.focus(), 40);
+}
+
+function closeLimit() {
+  ui.limitModal.hidden = true;
+}
+
+function limitError(message) {
+  ui.lErr.textContent = message;
+  ui.lErr.hidden = false;
+}
+
+async function submitLimit() {
+  if (!selected) return;
+
+  const limit = readLimit(ui.lSpeed, ui.lSpeedCustom);
+  if (limit === null) {
+    limitError('Enter a custom speed in kilobytes per second, or pick a preset.');
+    ui.lSpeedCustom.focus();
+    return;
+  }
+
+  ui.lOk.disabled = true;
+  ui.lOk.textContent = 'Applying…';
+  try {
+    // POSTed rather than sent as an action, because this carries a value the
+    // server has to read and refuse if it cannot honour it.
+    await api('/api/downloads/' + enc(selected) + '/speed-limit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speed_limit: limit }),
+    });
+    closeLimit();
+    toast(limit > 0 ? 'Capped at ' + size(limit) + ' per second.' : 'Speed limit removed.', false);
+    await refresh();
+  } catch (err) {
+    limitError(err.message);
+  } finally {
+    ui.lOk.disabled = false;
+    ui.lOk.textContent = 'Apply';
+  }
+}
+
+/* Shows the custom box only when "Custom" is chosen, and focuses it so the
+ * next keystroke lands somewhere useful. */
+function wireLimitSelect(sel, custom) {
+  sel.addEventListener('change', () => {
+    const isCustom = sel.value === String(CUSTOM);
+    custom.hidden = !isCustom;
+    if (isCustom) setTimeout(() => custom.focus(), 0);
+  });
 }
 
 /* ── wiring ────────────────────────────────────────────────────────────── */
@@ -366,6 +514,16 @@ ui.mOk.addEventListener('click', submitAdd);
 ui.url.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAdd(); });
 ui.name.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAdd(); });
 
+ui.limit.addEventListener('click', openLimit);
+ui.lCancel.addEventListener('click', closeLimit);
+ui.limitModal.addEventListener('click', (e) => { if (e.target === ui.limitModal) closeLimit(); });
+ui.lOk.addEventListener('click', submitLimit);
+ui.lSpeed.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLimit(); });
+ui.lSpeedCustom.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitLimit(); });
+
+wireLimitSelect(ui.mLimit, ui.mLimitCustom);
+wireLimitSelect(ui.lSpeed, ui.lSpeedCustom);
+
 ui.pause.addEventListener('click', () => act('pause'));
 ui.resume.addEventListener('click', () => {
   const d = current();
@@ -376,6 +534,11 @@ ui.reveal.addEventListener('click', () => act('reveal'));
 ui.remove.addEventListener('click', () => act('remove'));
 
 document.addEventListener('keydown', (e) => {
+  // The limit sheet sits above the add sheet, so it gets first refusal.
+  if (!ui.limitModal.hidden) {
+    if (e.key === 'Escape') closeLimit();
+    return;
+  }
   if (!ui.modal.hidden) {
     if (e.key === 'Escape') closeModal();
     return;
@@ -422,6 +585,10 @@ async function refresh() {
 }
 
 async function bootstrap() {
+  fillLimitSelect(ui.mLimit);
+  fillLimitSelect(ui.lSpeed);
+  showLimit(ui.mLimit, ui.mLimitCustom, 0);
+
   try {
     const health = await api('/api/health');
     ui.dir.textContent = health.download_dir || '';

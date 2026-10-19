@@ -195,6 +195,7 @@ Check "page serves 200" ($page.StatusCode -eq 200) "got $($page.StatusCode)"
 Check "token baked into page" ($page.Content -match $token) "literal token not present in served HTML"
 Check "no placeholder left" ($page.Content -notmatch "__GODL_TOKEN__") "placeholder still present"
 Check "page is the IDM-style table" ($page.Content -match 'role="columnheader"') "column headers missing"
+Check "page offers a speed limit control" ($page.Content -match 'id="t-limit"') "limit button missing from the served page"
 
 $css = Invoke-WebRequest "$ep/app.css" -UseBasicParsing -TimeoutSec 10
 Check "stylesheet serves" ($css.StatusCode -eq 200) "got $($css.StatusCode)"
@@ -203,6 +204,39 @@ Check "stylesheet serves" ($css.StatusCode -eq 200) "got $($css.StatusCode)"
 $url = "http://127.0.0.1:$originPort/payload.bin"
 $add = Invoke-Api "/api/downloads" "POST" $true ('{"url":"' + $url + '","connections":8}')
 Check "add accepted" ($add.code -eq 201) "got $($add.code): $($add.body)"
+
+# ── 3b. a per-download speed limit, set while the transfer is in flight ─────
+$listed = Invoke-Api "/api/downloads" "GET" $true $null
+$capId = (($listed.body | ConvertFrom-Json).downloads[0]).id
+Check "download has an id" ([bool]$capId) "no id in list: $($listed.body)"
+
+$none = Invoke-Api "/api/downloads" "GET" $true $null
+$noneFirst = (($none.body | ConvertFrom-Json).downloads[0]).speed_limit
+Check "new download starts uncapped" ($noneFirst -eq 0) "speed_limit=$noneFirst, expected 0"
+
+# The transfer is running right now, which is the case the control exists for.
+$cap = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":1048576}'
+Check "limit accepted on a running transfer" ($cap.code -eq 200) "got $($cap.code): $($cap.body)"
+
+$capped = Invoke-Api "/api/downloads" "GET" $true $null
+$capNow = (($capped.body | ConvertFrom-Json).downloads | Where-Object { $_.id -eq $capId })[0].speed_limit
+Check "running transfer reports the new limit" ($capNow -eq 1048576) "speed_limit=$capNow, expected 1048576"
+
+# A negative speed cannot be honoured; refusing it beats storing a number the
+# engine will quietly ignore.
+$neg = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":-1}'
+Check "negative limit refused" ($neg.code -eq 400) "got $($neg.code)"
+$unknown = Invoke-Api "/api/downloads/nope/speed-limit" "POST" $true '{"speed_limit":1024}'
+Check "unknown id refused" ($unknown.code -eq 404) "got $($unknown.code)"
+
+# Clearing it must not be mistaken for leaving it alone.
+$clear = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":0}'
+Check "limit can be cleared" ($clear.code -eq 200) "got $($clear.code): $($clear.body)"
+
+# And set it again so the transfer finishes under a cap - which is what proves
+# a throttled file still completes whole rather than stalling.
+$again = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":1048576}'
+Check "limit set again" ($again.code -eq 200) "got $($again.code): $($again.body)"
 
 $filesDir = Join-Path $home2 "files"
 $dest = Join-Path $filesDir "payload.bin"
@@ -233,6 +267,12 @@ $fd = ($final.body | ConvertFrom-Json).downloads[0]
 Check "connection count reported" ($fd.connections -eq 8) "connections=$($fd.connections), expected 8"
 Check "progress keys lowercase" ($final.body -match '"done"') "expected lowercase done: $($final.body.Substring(0, [math]::Min(400, $final.body.Length)))"
 Check "progress shows 100%" ($fd.progress.percent -ge 99.9) "percent=$($fd.progress.percent)"
+
+# The worker saves the record once more when it finishes, from a copy it made
+# before the limit was set. If that copy is not refreshed the completion write
+# puts the old value back - and because the transfer is over, nothing is left
+# running to make the loss visible. This is the check that catches it.
+Check "speed limit survived completion" ($fd.speed_limit -eq 1048576) "speed_limit=$($fd.speed_limit) after done, expected 1048576"
 
 # ── screenshot with a real row on screen ───────────────────────────────────
 try {

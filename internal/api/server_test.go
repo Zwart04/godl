@@ -128,6 +128,7 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		{"add", http.MethodPost, "/api/downloads", `{"url":"http://127.0.0.1:9/x"}`},
 		{"pause", http.MethodPost, "/api/downloads/none/pause", ""},
 		{"remove", http.MethodDelete, "/api/downloads/none", ""},
+		{"speed-limit", http.MethodPost, "/api/downloads/none/speed-limit", `{"speed_limit":1024}`},
 	}
 
 	for _, tc := range cases {
@@ -456,5 +457,152 @@ func TestAddRejectsAnOversizedBody(t *testing.T) {
 	rec := call(t, f, http.MethodPost, "/api/downloads", testToken, huge)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("oversized body: status = %d, want 400", rec.Code)
+	}
+}
+
+type limitResponse struct {
+	OK       bool   `json:"ok"`
+	Error    string `json:"error"`
+	Download struct {
+		ID         string `json:"id"`
+		SpeedLimit int64  `json:"speed_limit"`
+	} `json:"download"`
+}
+
+type listResponse struct {
+	Downloads []struct {
+		ID         string `json:"id"`
+		SpeedLimit int64  `json:"speed_limit"`
+	} `json:"downloads"`
+}
+
+func TestSpeedLimitIsRecordedAtAddAndChangeableAfterwards(t *testing.T) {
+	f := newFixture(t)
+	body := bytes.Repeat([]byte("godl"), 32_000)
+	srv := ranged(t, body)
+
+	// Chosen as the download is created, the way the add sheet offers it.
+	payload, err := json.Marshal(AddRequest{
+		URL:         srv.URL + "/file.bin",
+		Filename:    "capped.bin",
+		Connections: 4,
+		SpeedLimit:  256 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := call(t, f, http.MethodPost, "/api/downloads", testToken, string(payload))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var created limitResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode add response: %v", err)
+	}
+	if created.Download.SpeedLimit != 256*1024 {
+		t.Fatalf("speed_limit on add = %d, want %d", created.Download.SpeedLimit, 256*1024)
+	}
+	stored, err := f.store.Load(created.Download.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.SpeedLimit != 256*1024 {
+		t.Fatalf("recorded speed_limit = %d, want %d", stored.SpeedLimit, 256*1024)
+	}
+
+	// Changed afterwards, without disturbing anything else about the transfer.
+	rec = call(t, f, http.MethodPost, "/api/downloads/"+created.Download.ID+"/speed-limit",
+		testToken, `{"speed_limit": 1048576}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var changed limitResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &changed); err != nil {
+		t.Fatalf("decode change response: %v", err)
+	}
+	if changed.Download.SpeedLimit != 1048576 {
+		t.Fatalf("speed_limit after change = %d, want 1048576", changed.Download.SpeedLimit)
+	}
+	stored, err = f.store.Load(created.Download.ID)
+	if err != nil {
+		t.Fatalf("load after change: %v", err)
+	}
+	if stored.SpeedLimit != 1048576 {
+		t.Fatalf("record after change = %d, want 1048576", stored.SpeedLimit)
+	}
+	// The list is what the interface reads; it has to agree with the record.
+	rec = call(t, f, http.MethodGet, "/api/downloads", testToken, "")
+	var listed listResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	found := false
+	for _, item := range listed.Downloads {
+		if item.ID == created.Download.ID {
+			found = true
+			if item.SpeedLimit != 1048576 {
+				t.Fatalf("listed speed_limit = %d, want 1048576", item.SpeedLimit)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the download is missing from the list")
+	}
+
+	// Zero means no ceiling, and must be distinguishable from "not set".
+	rec = call(t, f, http.MethodPost, "/api/downloads/"+created.Download.ID+"/speed-limit",
+		testToken, `{"speed_limit": 0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if stored, err = f.store.Load(created.Download.ID); err != nil || stored.SpeedLimit != 0 {
+		t.Fatalf("record after clearing = %v, want 0", err)
+	}
+}
+
+// A negative rate cannot be honoured, and an unknown id is not a successful
+// change. Both are refused loudly rather than stored as something the engine
+// will quietly ignore.
+func TestSpeedLimitRefusesWhatItCannotHonour(t *testing.T) {
+	f := newFixture(t)
+	body := bytes.Repeat([]byte("x"), 4096)
+	srv := ranged(t, body)
+
+	payload, err := json.Marshal(AddRequest{URL: srv.URL + "/f.bin", Filename: "f.bin", Connections: 4})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := call(t, f, http.MethodPost, "/api/downloads", testToken, string(payload))
+	var created limitResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if rec = call(t, f, http.MethodPost, "/api/downloads/"+created.Download.ID+"/speed-limit",
+		testToken, `{"speed_limit": -1}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative limit: status = %d, want 400", rec.Code)
+	}
+	if rec = call(t, f, http.MethodPost, "/api/downloads/nope/speed-limit",
+		testToken, `{"speed_limit": 1024}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id: status = %d, want 404", rec.Code)
+	}
+	if rec = call(t, f, http.MethodPost, "/api/downloads/"+created.Download.ID+"/speed-limit",
+		testToken, `not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: status = %d, want 400", rec.Code)
+	}
+
+	// Nothing above may have changed the record.
+	stored, err := f.store.Load(created.Download.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stored.SpeedLimit != 0 {
+		t.Fatalf("a rejected request changed speed_limit to %d, want it left at 0", stored.SpeedLimit)
+	}
+
+	// The same rule applies when the limit is chosen at add time.
+	if rec = call(t, f, http.MethodPost, "/api/downloads", testToken,
+		`{"url":"`+srv.URL+`/f.bin","filename":"n.bin","connections":4,"speed_limit":-10}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("add with a negative limit: status = %d, want 400", rec.Code)
 	}
 }
