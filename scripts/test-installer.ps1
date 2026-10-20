@@ -111,6 +111,17 @@ Check "godl.exe size plausible"   ((Get-Item "$dir\godl.exe").Length -gt 10MB) "
 Check "host size plausible"       ((Get-Item "$dir\godl-host.exe").Length -gt 8MB) "too small"
 Check "no leftover .new files"    (@(Get-ChildItem $dir -Filter *.new -ErrorAction SilentlyContinue).Count -eq 0) "found .new"
 
+# The extension ships with the programs so "Load unpacked" has a folder to
+# point at on a machine that has never seen this repository.
+$extManifest = Join-Path $dir "extension\chrome\manifest.json"
+Check "browser extension extracted" (Test-Path $extManifest) "missing $extManifest"
+Check "firefox extension extracted" (Test-Path (Join-Path $dir "extension\firefox\manifest.json")) "missing firefox manifest"
+Check "extension icons extracted"   (Test-Path (Join-Path $dir "extension\chrome\icons\128.png")) "missing extension icon"
+if (Test-Path $extManifest) {
+  $ext = Get-Content $extManifest -Raw | ConvertFrom-Json
+  Check "extension asks for notifications" ($ext.permissions -contains "notifications") "notifications permission missing"
+}
+
 Check "start menu shortcut" (Test-Path (Join-Path $menu "godl.lnk")) "missing"
 Check "desktop shortcut"    (Test-Path (Join-Path $desktop "godl.lnk")) "missing"
 

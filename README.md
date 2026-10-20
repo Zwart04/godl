@@ -163,10 +163,12 @@ implementation is not.
 Grab **[`godl-setup.exe`](https://github.com/Zwart04/godl/releases/latest)**
 and run it. That is the entire installation.
 
-It copies `godl.exe` and `godl-host.exe` into
+It copies `godl.exe`, `godl-host.exe` and the browser extension into
 `%LOCALAPPDATA%\Programs\godl`, creates Start Menu and desktop shortcuts,
 registers itself with Chrome, Brave, Edge and Firefox, adds itself to Windows
-startup, and opens the app.
+startup, and opens the app. The extension lands in
+`%LOCALAPPDATA%\Programs\godl\extension\chrome` (and `…\firefox`), which is the
+folder to pick when the browser asks for one.
 
 You never need to place the second program yourself: `godl-host.exe` is the
 file your *browser* launches when a download link is clicked, and the setup
@@ -263,9 +265,10 @@ it.) These two commands are only for repairing it by hand:
 
 - **Chrome / Edge / Brave** — open `chrome://extensions` (Brave:
   `brave://extensions`), turn on *Developer mode*, choose *Load unpacked*, and
-  pick `browser-extension/chrome`. Extension shows desktop notification after
-  successful handoff to godl; install updated extension permissions and restart
-  Brave before testing notifications.
+  pick `%LOCALAPPDATA%\Programs\godl\extension\chrome` (from a source checkout
+  that is `browser-extension/chrome`). A desktop notification confirms each
+  successful handoff; reload the extension once after upgrading so the browser
+  picks up the `notifications` permission.
 - **Firefox** — open `about:debugging#/runtime/this-firefox`, choose
   *Load Temporary Add-on…*, and pick `browser-extension/firefox/manifest.json`.
 

@@ -51,6 +51,15 @@ try {
       ((Get-Item $zip).Length / 1KB), $ratio)
   }
 
+  # 2b. The browser extension, as a tree the installer can unpack beside the
+  # programs. A setup that installs the manager but leaves the person without
+  # the folder "Load unpacked" needs is only half an install.
+  $extZip = Join-Path $payDir 'extension.zip'
+  if (Test-Path $extZip) { Remove-Item -Force $extZip }
+  Compress-Archive -Path (Join-Path $root 'browser-extension\*') `
+    -DestinationPath $extZip -CompressionLevel Optimal
+  Write-Host ('  {0,-16} {1,6:N0} KB' -f 'extension.zip', ((Get-Item $extZip).Length / 1KB))
+
   # 3. The installer itself.
   #
   # -H windowsgui keeps it out of the way in a terminal: there is no console

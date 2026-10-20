@@ -38,7 +38,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-//go:embed payload/godl.exe.zip payload/godl-host.exe.zip
+//go:embed payload/godl.exe.zip payload/godl-host.exe.zip payload/extension.zip
 var payload embed.FS
 
 const appName = "godl"
@@ -63,7 +63,10 @@ func main() {
 		if err = install(*dir, !*noDesktop, !*noStart); err == nil {
 			said = "godl is installed.\n\n" +
 				"It is in " + *dir + " and is running now.\n\n" +
-				"Install the browser extension to have downloads handed to it."
+				"The browser extension is in " + filepath.Join(*dir, "extension") + ".\n\n" +
+				"To have downloads handed to godl, open brave://extensions (or " +
+				"chrome://extensions), turn on Developer mode, choose Load unpacked, " +
+				"and pick the chrome folder inside it."
 		}
 	}
 
@@ -90,6 +93,14 @@ func install(dir string, desktop, autostart bool) error {
 		if err := unpack(name, filepath.Join(dir, name)); err != nil {
 			return err
 		}
+	}
+
+	// The browser extension is part of the product, not a repository extra.
+	// Without it installed beside the programs, a person who ran the setup has
+	// no folder to point "Load unpacked" at, and the link a browser hands over
+	// is the one thing they installed godl for.
+	if err := unpackTree("extension", filepath.Join(dir, "extension")); err != nil {
+		return err
 	}
 
 	host := filepath.Join(dir, appName+"-host.exe")
@@ -158,6 +169,69 @@ func unpack(name, dest string) error {
 		return fmt.Errorf("could not replace %s: %w", dest, err)
 	}
 	return nil
+}
+
+// unpackTree writes every file in a payload archive below dest.
+//
+// The extension archive is a real tree - chrome/, firefox/ and their icons -
+// unlike the program archives, which hold one file each. Entries are checked
+// against dest so a crafted archive cannot write outside the install folder.
+func unpackTree(name, dest string) error {
+	zipBytes, err := payload.ReadFile("payload/" + name + ".zip")
+	if err != nil {
+		return fmt.Errorf("the setup file is missing %s inside itself: %w", name, err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return fmt.Errorf("could not read %s: %w", name, err)
+	}
+	if len(zr.File) == 0 {
+		return fmt.Errorf("%s is empty", name)
+	}
+
+	root := filepath.Clean(dest) + string(os.PathSeparator)
+	for _, f := range zr.File {
+		target := filepath.Join(dest, filepath.FromSlash(f.Name))
+		if !strings.HasPrefix(target, root) {
+			return fmt.Errorf("%s contains an unsafe path: %s", name, f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("could not create %s: %w", target, err)
+			}
+			continue
+		}
+		body, err := readEntry(f)
+		if err != nil {
+			return fmt.Errorf("could not read %s from %s: %w", f.Name, name, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("could not create %s: %w", filepath.Dir(target), err)
+		}
+		if err := os.WriteFile(target, body, 0o644); err != nil {
+			return fmt.Errorf("could not write %s: %w", target, err)
+		}
+	}
+	return nil
+}
+
+// readEntry inflates one archive entry, refusing short data the same way
+// readFirstFile does.
+func readEntry(f *zip.File) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	want := int64(f.UncompressedSize64)
+	out := new(bytes.Buffer)
+	if _, err := io.Copy(out, io.LimitReader(rc, want+1)); err != nil {
+		return nil, err
+	}
+	if int64(out.Len()) != want {
+		return nil, fmt.Errorf("expected %d bytes, got %d", want, out.Len())
+	}
+	return out.Bytes(), nil
 }
 
 // readFirstFile takes the single entry out of the payload archive.
