@@ -23,7 +23,7 @@ const EnvHome = "GODL_HOME"
 
 // Version is reported by every surface that answers a version question, so the
 // CLI, the UI and the browser host cannot disagree about what is installed.
-const Version = "0.3.1"
+const Version = "0.3.2"
 
 const (
 	tokenFile    = "api-token"
@@ -51,15 +51,42 @@ func Store() state.Store { return state.Store{Dir: filepath.Join(Dir(), "downloa
 // server both arrive with whatever working directory they were started in, and
 // a relative path would scatter files across two of them. It is deliberately
 // not the record directory above - state and payload stay separate.
-func FilesDir() string { return filepath.Join(Dir(), "files") }
+//
+// It also has to be somewhere a person can see. The first version put the
+// payload inside the application profile, which is hidden well enough that a
+// finished 756 MB download looked like nothing had happened at all: the
+// browser had already erased its own row, and godl said no more about it. So
+// the files now sit under the user's own Downloads folder, with the category
+// rules sorting them into folders underneath.
+//
+// A run redirected by GODL_HOME keeps everything inside itself, so a test or
+// a portable copy never drops a file into the real Downloads folder.
+func FilesDir() string {
+	if h := strings.TrimSpace(os.Getenv(EnvHome)); h != "" {
+		return filepath.Join(h, "files")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, "Downloads", "godl")
+	}
+	return filepath.Join(Dir(), "files")
+}
 
 // EnsureFilesDir creates the download directory and returns its path.
+//
+// Downloads can be unwritable - redirected by policy, on a drive that just
+// filled up, or simply deleted along with everything else in it. A download
+// that lands somewhere less obvious beats a download that cannot start, so the
+// profile is tried before giving up.
 func EnsureFilesDir() (string, error) {
 	dir := FilesDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err == nil {
+		return dir, nil
+	}
+	fallback := filepath.Join(Dir(), "files")
+	if err := os.MkdirAll(fallback, 0o700); err != nil {
 		return "", err
 	}
-	return dir, nil
+	return fallback, nil
 }
 
 func createDir() error { return os.MkdirAll(Dir(), 0o700) }

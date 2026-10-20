@@ -8,18 +8,32 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// Chrome and Edge keep separate tables that read the same manifest, so one
-// manifest path is written to three keys.
+// Four browser tables, two manifests. Chrome, Chromium and Edge keep separate
+// tables that read the same manifest, so one manifest path is written to three
+// keys; Firefox reads the other manifest shape.
+//
+// Chromium is the one that took a bug to find. Brave, Vivaldi and the other
+// Chromium forks look in the Chromium table first and only fall back to
+// Chrome's own - and they do it by reading a hard-coded string inside the
+// browser, not by asking Windows which browsers exist. Leaving this out worked
+// through that fallback, for as long as the fallback happened to be intact.
 const (
-	chromeKey = `Software\Google\Chrome\NativeMessagingHosts\` + ChromeHostName
-	edgeKey   = `Software\Microsoft\Edge\NativeMessagingHosts\` + ChromeHostName
-	mozKey    = `Software\Mozilla\NativeMessagingHosts\` + FirefoxHostName
+	chromeKey   = `Software\Google\Chrome\NativeMessagingHosts\` + ChromeHostName
+	chromiumKey = `Software\Chromium\NativeMessagingHosts\` + ChromeHostName
+	edgeKey     = `Software\Microsoft\Edge\NativeMessagingHosts\` + ChromeHostName
+	mozKey      = `Software\Mozilla\NativeMessagingHosts\` + FirefoxHostName
 )
+
+// everyKey is the one list every function below iterates. A new browser is one
+// line here rather than five places to remember - which is how a table ends up
+// written but never restored, or removed but never checked.
+var everyKey = []string{chromeKey, chromiumKey, edgeKey, mozKey}
 
 func writeKeys(chromeManifest, firefoxManifest string) error {
 	var errs []error
 	for _, pair := range [][2]string{
 		{chromeKey, chromeManifest},
+		{chromiumKey, chromeManifest},
 		{edgeKey, chromeManifest},
 		{mozKey, firefoxManifest},
 	} {
@@ -32,7 +46,7 @@ func writeKeys(chromeManifest, firefoxManifest string) error {
 
 func removeKeys() []error {
 	var errs []error
-	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+	for _, key := range everyKey {
 		if err := deleteTree(registry.CURRENT_USER, key); err != nil {
 			errs = append(errs, err)
 		}
@@ -41,7 +55,7 @@ func removeKeys() []error {
 }
 
 func keysPresent() bool {
-	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+	for _, key := range everyKey {
 		if _, err := readDefault(key); err != nil {
 			return false
 		}
@@ -57,8 +71,8 @@ func keysPresent() bool {
 // path of its own, because "where my own godl-host.exe happens to be" is not
 // the same question as "where this was pointing".
 func keysTargets() map[string]string {
-	out := make(map[string]string, 3)
-	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+	out := make(map[string]string, len(everyKey))
+	for _, key := range everyKey {
 		if value, err := readDefault(key); err == nil {
 			out[key] = value
 		}
@@ -72,7 +86,7 @@ func keysTargets() map[string]string {
 // rather than half-hooked to whatever the run left behind.
 func restoreKeys(snapshot map[string]string) error {
 	var errs []error
-	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+	for _, key := range everyKey {
 		if value, ok := snapshot[key]; ok {
 			errs = append(errs, setDefault(key, value))
 			continue

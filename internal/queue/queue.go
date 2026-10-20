@@ -26,6 +26,9 @@ type Event struct {
 	Kind string // "started" | "finished" | "failed" | "paused"
 	ID   string
 	Err  error
+	// Dest is the file the event is about, carried so an observer can name
+	// it without re-reading every record from disk for one notification.
+	Dest string
 }
 
 // Snapshot is a race-free copy of one download, safe to hand to another
@@ -507,14 +510,14 @@ func (q *Queue) launch(ctx context.Context, opt engine.Options, id string, wg *s
 			d.Status = state.StatusDone
 			d.Error = ""
 			q.saveOwned(e, d)
-			q.emit(Event{Kind: "finished", ID: d.ID})
+			q.emit(Event{Kind: "finished", ID: d.ID, Dest: d.Dest})
 		case cancelled:
 			// The user asked us to stop: keep the progress, not the failure.
 			e.publish(state.StatusPaused, "", "")
 			d.Status = state.StatusPaused
 			d.Error = ""
 			q.saveOwned(e, d)
-			q.emit(Event{Kind: "paused", ID: d.ID})
+			q.emit(Event{Kind: "paused", ID: d.ID, Dest: d.Dest})
 		default:
 			fallback := ""
 			if d.SingleConnectionFallback {
@@ -524,7 +527,7 @@ func (q *Queue) launch(ctx context.Context, opt engine.Options, id string, wg *s
 			d.Status = state.StatusFailed
 			d.Error = err.Error()
 			q.saveOwned(e, d)
-			q.emit(Event{Kind: "failed", ID: d.ID, Err: err})
+			q.emit(Event{Kind: "failed", ID: d.ID, Err: err, Dest: d.Dest})
 		}
 	}()
 	return true

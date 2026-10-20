@@ -27,6 +27,7 @@ import (
 
 	"godl/internal/app"
 	"godl/internal/browsersetup"
+	"godl/internal/config"
 	"godl/internal/state"
 
 	"github.com/wailsapp/wails/v2"
@@ -103,12 +104,21 @@ func runWindow(noClipboard bool) {
 		return
 	}
 
-	// Best effort and silent. Wiring the browser is three registry values
+	// Best effort and silent. Wiring the browser is four registry values
 	// and two manifest files; failing to write them means the extension
 	// cannot hand over a link, which is a lesser problem than refusing to
 	// open a window that was double-clicked.
-	if host, err := browsersetup.HostExePath(); err == nil {
-		_ = browsersetup.Register(host)
+	//
+	// A run redirected by GODL_HOME writes none of it. Those tables belong
+	// to the machine, not to the run: they point at whichever install is
+	// working today, and a throwaway directory rewriting them leaves a
+	// perfectly good install unable to hand over a single link with nothing
+	// on screen to say why. Not hypothetical - it is how this machine's
+	// Brave stopped seeing godl for an afternoon.
+	if os.Getenv(config.EnvHome) == "" {
+		if host, err := browsersetup.HostExePath(); err == nil {
+			_ = browsersetup.Register(host)
+		}
 	}
 
 	runErr := wails.Run(&options.App{
@@ -186,7 +196,7 @@ func registerBrowser() string {
 	if err := browsersetup.Register(host); err != nil {
 		return "godl could not connect to your browser.\n\n" + err.Error()
 	}
-	return "godl is now registered with Chrome, Edge and Firefox.\n\n" +
+	return "godl is now registered with Chrome, Brave, Edge and Firefox.\n\n" +
 		"Install the extension in your browser, then restart the browser so it picks " +
 		"up the new registration."
 }

@@ -30,3 +30,7 @@ coverage.*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Editor and compiler backup files. `godl-host.exe~` slipped past the `*.exe`
+# rule above and was committed once, which is why this line exists.
+*~

@@ -30,6 +30,7 @@ import (
 	"godl/internal/clipboard"
 	"godl/internal/config"
 	"godl/internal/engine"
+	"godl/internal/notify"
 	"godl/internal/queue"
 )
 
@@ -108,7 +109,13 @@ func Start(o Options) (*Instance, error) {
 	if err != nil {
 		return bail(fmt.Errorf("could not create the API token: %w", err))
 	}
-	if _, err := config.EnsureFilesDir(); err != nil {
+	// Created up front rather than at the first download: if Downloads is
+	// unwritable this is the one moment where saying so beats failing an
+	// hour into a large transfer. Whatever directory was actually created -
+	// Downloads, or the profile if Downloads refused - is the one the API
+	// is told about, so the two cannot drift apart.
+	downloadDir, err := config.EnsureFilesDir()
+	if err != nil {
 		return bail(fmt.Errorf("could not create the download folder: %w", err))
 	}
 
@@ -130,6 +137,9 @@ func Start(o Options) (*Instance, error) {
 
 	srv := api.New(q, token)
 	srv.Connections = o.Connections
+	// The directory that was actually created, not the one that was asked
+	// for: they differ on a machine whose Downloads folder refuses writes.
+	srv.DownloadDir = downloadDir
 	// Read once at start-up. A categories.json edited while the app is open is
 	// picked up next launch - reloading it per request would let a file being
 	// half-saved decide where a download lands.
@@ -149,6 +159,26 @@ func Start(o Options) (*Instance, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = hs.Serve(ln) }()
+
+	// A finished download has to say so somewhere the person is actually
+	// looking. The window may be behind four others, and by the time the
+	// last byte lands the browser has already erased its own row - so a
+	// transfer that took thirty seconds and eight connections otherwise
+	// looks, from the chair in front of it, exactly like nothing happened.
+	// The channel never blocks a worker, and it closes when the queue does.
+	go func() {
+		for ev := range q.Events() {
+			if ev.Kind != "finished" || ev.Dest == "" {
+				continue
+			}
+			// The folder is named as well as the file. The complaint that
+			// mattered was never "no notification" but "I cannot find what
+			// it downloaded", and a filename on its own does not answer
+			// that.
+			notify.Completed("Download complete",
+				filepath.Base(ev.Dest)+"\n"+filepath.Dir(ev.Dest))
+		}
+	}()
 
 	// The watcher reads the clipboard itself rather than asking the window to,
 	// so a link is caught even while the list is scrolled, the sheet is open, or

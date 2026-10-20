@@ -119,11 +119,18 @@ implementation is not.
   that is not doing work
 
 **Browser**
-- Extension for Chrome, Edge and Firefox
+- Extension for Chrome, Brave, Edge and Firefox
 - Catches downloads and hands them to godl with the page's cookies, referer
   and user agent, so a server that said yes to the browser says yes to godl
 - Gives the download straight back to the browser if godl is unavailable —
   nothing is ever lost by trying
+
+**After a download**
+- Files land in your own `Downloads\godl` folder, sorted into category folders
+  underneath — not inside a profile directory you would have to go looking for
+- A balloon from Windows names the file and the folder it landed in. The
+  browser's own row is already gone by then, and a window behind four others
+  is not an announcement
 
 **Footprint**
 - **One setup file.** `godl-setup.exe` carries everything, installs it, wires
@@ -140,7 +147,7 @@ and run it. That is the entire installation.
 
 It copies `godl.exe` and `godl-host.exe` into
 `%LOCALAPPDATA%\Programs\godl`, creates Start Menu and desktop shortcuts,
-registers itself with Chrome, Edge and Firefox, adds itself to Windows
+registers itself with Chrome, Brave, Edge and Firefox, adds itself to Windows
 startup, and opens the app.
 
 You never need to place the second program yourself: `godl-host.exe` is the
@@ -157,8 +164,8 @@ puts it where the browser has already been told to find it.
 ```
 
 Uninstalling removes the programs, the shortcuts, the startup entry and all
-three browser registrations. Your download history in `%APPDATA%\godl` is left
-alone unless you delete it yourself.
+four browser registrations. Your download history in `%APPDATA%\godl` and your
+files in `Downloads\godl` are left alone unless you delete them yourself.
 
 ### Building it from source
 
@@ -200,18 +207,24 @@ same path **Add** uses, and **Not now** puts it down. Nothing is fetched until
 you choose; a copy on its own never starts a transfer. Text that merely
 mentions a link is ignored, as is anything already in the list.
 
-Everything lives in `%APPDATA%\godl`. Setting `GODL_HOME` redirects all of it
-elsewhere, which is how the test suite runs against a scratch directory.
+State lives in `%APPDATA%\godl`; finished files land in your own
+`Downloads\godl`. Setting `GODL_HOME` redirects both — which is how the test
+suite runs against a scratch directory, and why a test run never drops a file
+into your real Downloads folder or rewrites your browser's registration.
 
 ## Browser extension
 
-The extension lives in [`browser-extension/`](browser-extension). Chrome and
-Edge use `browser-extension/chrome`; Firefox uses `browser-extension/firefox`.
-The logic in both is byte-identical — only the manifest differs.
+The extension lives in [`browser-extension/`](browser-extension). Chrome, Edge
+and Brave use `browser-extension/chrome`; Firefox uses
+`browser-extension/firefox`. The logic in both is byte-identical — only the
+manifest differs. Brave reads Chromium's registration, which godl writes as
+well as Chrome's, so one folder covers all three.
 
 **1. Register the native messaging host** — the setup does this for you, and
 `godl.exe` does it again on every launch so moving the folder never breaks it.
-These two commands are only for repairing it by hand:
+(The exception is a run started with `GODL_HOME` set: such a run is a test or a
+throwaway copy, and the browser table belongs to the machine rather than to
+it.) These two commands are only for repairing it by hand:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\godl\godl.exe" --register-browser   # rewrites the keys
@@ -222,7 +235,7 @@ These two commands are only for repairing it by hand:
 
 | Switch | What it does |
 | --- | --- |
-| `--register-browser` | Writes the Chrome, Edge and Firefox keys |
+| `--register-browser` | Writes the Chrome, Brave, Edge and Firefox keys |
 | `--unregister-browser` | Removes them |
 | `--serve` | Runs the same engine with no window; <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it |
 | `--clipboard` | With `--serve`, watches the clipboard the way the window does |
@@ -230,8 +243,9 @@ These two commands are only for repairing it by hand:
 
 **2. Load the extension**
 
-- **Chrome / Edge** — open `chrome://extensions`, turn on *Developer mode*,
-  choose *Load unpacked*, and pick `browser-extension/chrome`.
+- **Chrome / Edge / Brave** — open `chrome://extensions` (Brave:
+  `brave://extensions`), turn on *Developer mode*, choose *Load unpacked*, and
+  pick `browser-extension/chrome`.
 - **Firefox** — open `about:debugging#/runtime/this-firefox`, choose
   *Load Temporary Add-on…*, and pick `browser-extension/firefox/manifest.json`.
 
@@ -483,6 +497,7 @@ godl/
 │  ├─ engine/                  segmented transfer
 │  ├─ host/                    native messaging client
 │  ├─ nmh/                     native messaging framing
+│  ├─ notify/                  the balloon Windows shows when a download ends
 │  ├─ queue/                   scheduler
 │  └─ state/                   on-disk records
 ├─ browser-extension/
@@ -504,12 +519,16 @@ godl/
 - [x] Native desktop window
 - [x] Local HTTP control API with token auth
 - [x] Native messaging host with automatic manager startup
-- [x] Browser extension for Chrome, Edge and Firefox
+- [x] Browser extension for Chrome, Brave, Edge and Firefox
 - [x] Single-file setup with install, shortcuts and uninstall
 - [x] Per-download speed limit, set when adding or moved while a transfer runs
 - [x] Queue ordering and a scheduled start
 - [x] Download categories and folder rules
 - [x] Clipboard monitor for copied links
+- [x] Downloads land in your own `Downloads\godl`, with a Windows balloon naming
+  the file and the folder when a transfer ends
+- [x] A run redirected by `GODL_HOME` cannot touch the machine's browser
+  registration
 
 ## License
 

@@ -4,7 +4,7 @@
 // browser to launch a small helper executable - the native messaging host -
 // and the browser will only do that for hosts listed in a per-user registry
 // key that names a manifest file on disk. This package owns that wiring: the
-// two manifests, the three registry keys, and the ability to undo all of it.
+// two manifests, the four browser tables, and the ability to undo all of it.
 //
 // Nothing here talks to the browser or to godl itself; it only records where
 // godl-host.exe lives so the browser has an address to knock on.

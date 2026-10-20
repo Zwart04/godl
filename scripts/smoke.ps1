@@ -55,14 +55,16 @@ $guiProc = $null
 # and puts back what it found, so both are recorded before anything is touched.
 $script:hadClip = $null
 $script:clipTouched = $false
-# The browser tables belong to the machine, and the manager re-registers them
-# on every launch - which this run does with a scratch GODL_HOME, so it points
-# them at a manifest that is deleted along with the scratch directory. A
-# browser would then be quietly unhooked by an innocent test run, which is the
-# trap test-installer.ps1 had and the reason a developer's extension can go
-# silent after a green suite. Whatever is there before is put back after.
+# The browser tables belong to the machine. A run launched with a scratch
+# GODL_HOME used to rewrite them anyway, pointing the real browser at a
+# manifest that was deleted along with the scratch directory - which unhooked
+# a perfectly good install and left nothing on screen to explain it. That is
+# now forbidden in main.go, and the check at the end of this run is what keeps
+# it forbidden. Whatever is there before is put back after, so the run cannot
+# leave a trace either way.
 $script:browserKeys = @(
     'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.godl.host',
+    'HKCU:\Software\Chromium\NativeMessagingHosts\com.godl.host',
     'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.godl.host',
     'HKCU:\Software\Mozilla\NativeMessagingHosts\com.godl.moz')
 $script:savedKeys = @{}
@@ -204,8 +206,8 @@ Check "origin server is up" (-not $origin.HasExited) "node exited: $($origin.Exi
 $env:GODL_HOME = $home2
 
 # ── 1. start the windowed exe ──────────────────────────────────────────────
-# From here the manager can rewrite the browser tables, so the values above
-# are worth putting back.
+# The launch below must leave the machine's browser tables alone; the values
+# saved at the top are read back at the end to prove it.
 $script:keysTouched = $true
 # A windowed program has no console to write to, so anything it says on stderr
 # - and in a race-enabled build, a race report - vanishes without this. The
@@ -626,6 +628,22 @@ $racy = $stderr -match 'WARNING: DATA RACE'
 $evidence = ''
 if ($racy) { $evidence = (($stderr -split "`r?`n") | Select-Object -First 8) -join ' // ' }
 Check "manager reported no data race" (-not $racy) $evidence
+
+# The regression test for the bug that took an afternoon to find. A run under
+# a scratch GODL_HOME must leave the machine's browser tables exactly as it
+# found them: they used to be rewritten on every launch, which quietly
+# unhooked a working install from its own browser. Read here, before Cleanup
+# puts back whatever was saved at the top - so a manager that still writes
+# them fails this check rather than being silently repaired by the test.
+$untouched = $true
+$diff = ''
+foreach ($k in $script:browserKeys) {
+    $now = (Get-ItemProperty -Path $k -ErrorAction SilentlyContinue).'(default)'
+    $before = $null
+    if ($script:savedKeys.ContainsKey($k)) { $before = $script:savedKeys[$k] }
+    if ($now -ne $before) { $untouched = $false; $diff = "$k : '$before' -> '$now'" }
+}
+Check "scratch run left the machine's browser tables alone" $untouched $diff
 
 # ── summary ────────────────────────────────────────────────────────────────
 Cleanup
