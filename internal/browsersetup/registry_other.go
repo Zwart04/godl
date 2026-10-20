@@ -14,3 +14,10 @@ func writeKeys(chromeManifest, firefoxManifest string) error {
 func removeKeys() []error { return nil }
 
 func keysPresent() bool { return false }
+
+// There are no browser tables to read here, so a snapshot is empty - and an
+// empty snapshot restores to nothing, which is exactly the state of the
+// machine.
+func keysTargets() map[string]string { return nil }
+
+func restoreKeys(map[string]string) error { return nil }

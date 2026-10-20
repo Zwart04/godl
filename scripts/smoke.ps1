@@ -51,6 +51,22 @@ $guiProc = $null
 # and puts back what it found, so both are recorded before anything is touched.
 $script:hadClip = $null
 $script:clipTouched = $false
+# The browser tables belong to the machine, and the manager re-registers them
+# on every launch - which this run does with a scratch GODL_HOME, so it points
+# them at a manifest that is deleted along with the scratch directory. A
+# browser would then be quietly unhooked by an innocent test run, which is the
+# trap test-installer.ps1 had and the reason a developer's extension can go
+# silent after a green suite. Whatever is there before is put back after.
+$script:browserKeys = @(
+    'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.godl.host',
+    'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\com.godl.host',
+    'HKCU:\Software\Mozilla\NativeMessagingHosts\com.godl.moz')
+$script:savedKeys = @{}
+$script:keysTouched = $false
+foreach ($k in $script:browserKeys) {
+    $v = (Get-ItemProperty -Path $k -ErrorAction SilentlyContinue).'(default)'
+    if ($null -ne $v) { $script:savedKeys[$k] = $v }
+}
 
 function Cleanup {
     $ErrorActionPreference = 'SilentlyContinue'
@@ -61,6 +77,18 @@ function Cleanup {
             if ($null -eq $script:hadClip) { Set-Clipboard -Value '' }
             else { Set-Clipboard -Value $script:hadClip }
         } catch { }
+    }
+    if ($script:keysTouched) {
+        foreach ($k in $script:browserKeys) {
+            if ($script:savedKeys.ContainsKey($k)) {
+                New-Item -Path $k -Force | Out-Null
+                New-ItemProperty -Path $k -Name '(default)' -Value $script:savedKeys[$k] -PropertyType String -Force | Out-Null
+            } else {
+                # It was not registered before, and leaving it registered now
+                # would be this run's own registration wearing the user's.
+                Remove-Item -Path $k -Recurse -Force
+            }
+        }
     }
     foreach ($c in Get-NetTCPConnection -LocalPort $originPort -State Listen) {
         $p = Get-Process -Id $c.OwningProcess
@@ -138,8 +166,16 @@ http.createServer((req, res) => {
   }));
   // Throttled so the transfer lasts long enough to be observed rather than
   // finishing between two polls and proving nothing about a running state.
+  //
+  // A request for "slow" is throttled far harder. One download on this origin
+  // takes about a second, which is short enough that a schedule sent a few
+  // milliseconds after the add could still arrive behind it - and then the
+  // server would be right to refuse, having nothing left to hold. Slowing that
+  // one keeps the question honest: what has a download waiting for an hour
+  // transferred?
+  const pause = req.url.indexOf('slow') !== -1 ? 60 : 4;
   const rs = fs.createReadStream(file, {start: start, end: end});
-  rs.on('data', (c) => { if (!rs.destroyed) rs.pause(); setTimeout(() => rs.resume(), 4); });
+  rs.on('data', (c) => { if (!rs.destroyed) rs.pause(); setTimeout(() => rs.resume(), pause); });
   rs.pipe(res);
 }).listen(port, '127.0.0.1', () => console.log('ready'));
 "@ | Set-Content -Path $server -Encoding ASCII
@@ -164,6 +200,9 @@ Check "origin server is up" (-not $origin.HasExited) "node exited: $($origin.Exi
 $env:GODL_HOME = $home2
 
 # ── 1. start the windowed exe ──────────────────────────────────────────────
+# From here the manager can rewrite the browser tables, so the values above
+# are worth putting back.
+$script:keysTouched = $true
 $guiProc = Start-Process -FilePath $gui -PassThru
 Check "godl.exe started" ($null -ne $guiProc) "Start-Process returned nothing"
 
@@ -298,9 +337,13 @@ Check "speed limit survived completion" ($fd.speed_limit -eq 1048576) "speed_lim
 # ── 3c. a scheduled start, and where a download sits in the queue ───────────
 #
 # A second download exists only so there is something to arrange: a list of
-# one has no order to change, and the refusals below would prove nothing. The
-# origin throttles, so it will still be waiting when we look at it.
-$add2 = Invoke-Api "/api/downloads" "POST" $true ('{"url":"' + $url + '","connections":2}')
+# one has no order to change, and the refusals below would prove nothing. It
+# asks for the origin's slow lane, because what these lines ask - what has a
+# download waiting for an hour transferred? - only has one honest answer while
+# that download is still going. On the fast lane the whole file arrives in
+# about a second, so the schedule could land behind it and the server would be
+# right to refuse to hold a download that had already arrived.
+$add2 = Invoke-Api "/api/downloads" "POST" $true ('{"url":"' + $url + '?slow=1","connections":2}')
 Check "second download accepted" ($add2.code -eq 201) "got $($add2.code): $($add2.body)"
 $added2 = ($add2.body | ConvertFrom-Json).download
 $secondId = $added2.id
@@ -320,7 +363,17 @@ $heldBody = (Invoke-Api "/api/downloads" "GET" $true $null).body
 $second = ($heldBody | ConvertFrom-Json).downloads | Where-Object { $_.id -eq $secondId }
 Check "scheduled download still queued" ($second.status -eq "queued") "status=$($second.status), expected queued"
 Check "scheduled download kept its time" ([bool]$second.starts_at) "starts_at missing from: $heldBody"
-Check "scheduled download has not transferred" (-not (Test-Path $added2.dest)) "the file exists while it is due in an hour"
+# This one is worth spelling out when it fails. "The file exists" says nothing
+# on its own: it could be this download having run early, or it having finished
+# before the schedule was applied, or two records sharing a name because the
+# first one's file was not on disk yet when the second was added. The folder
+# and the record as the server sees it now tell those apart.
+$listing = (@(Get-ChildItem (Split-Path -Parent $added2.dest) -File -ErrorAction SilentlyContinue) |
+    ForEach-Object { "$($_.Name)=$($_.Length)" }) -join " "
+$live2 = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads |
+    Where-Object { $_.id -eq $secondId }
+Check "scheduled download has not transferred" (-not (Test-Path $added2.dest)) `
+    "dest=$($added2.dest) status=$($live2.status) done=$($live2.progress.done)/$($live2.progress.total) starts_at=$($live2.starts_at) part=$(Test-Path ($added2.dest + '.part')) files: $listing"
 
 # A schedule the server cannot parse must be refused rather than stored as the
 # zero value, which would start the transfer at once and read as success.

@@ -933,6 +933,64 @@ func progressOf(q *Queue, id string) int64 {
 	return -1
 }
 
+// A control that arrives after the download has finished is refused, and the
+// record is left the way the worker left it.
+//
+// Every one of these stops a transfer first, and a transfer on its way out can
+// still reach the end: the bytes are whole and the part file has been
+// published. Writing over that record afterwards would put "queued", "paused"
+// or "cancelled" beside a file that has already arrived - and a schedule would
+// have the window waiting on a clock for a download with no first byte left to
+// wait for, which is how a smoke run once found a finished file under a record
+// that claimed to be held for an hour.
+func TestControlsLeaveAFinishedDownloadAlone(t *testing.T) {
+	dir := t.TempDir()
+	store := &state.Store{Dir: filepath.Join(dir, "records")}
+
+	dest := filepath.Join(dir, "done.bin")
+	finished := &state.Download{
+		ID:        state.NewID(),
+		URL:       "http://example.invalid/file.bin",
+		Dest:      dest,
+		PartPath:  dest + ".part",
+		TotalSize: 12,
+		Status:    state.StatusDone,
+		CreatedAt: time.Now(),
+	}
+	if err := store.Save(finished); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q := &Queue{Store: store}
+	when := time.Now().Add(time.Hour)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"schedule", func() error { return q.Schedule(finished.ID, &when) }},
+		{"pause", func() error { return q.Pause(finished.ID) }},
+		{"resume", func() error { return q.Resume(finished.ID) }},
+		{"retry", func() error { return q.Retry(finished.ID) }},
+		{"cancel", func() error { return q.Cancel(finished.ID) }},
+	} {
+		if err := tc.call(); !errors.Is(err, ErrFinished) {
+			t.Fatalf("%s a finished download: err = %v, want ErrFinished", tc.name, err)
+		}
+	}
+
+	after, err := store.Load(finished.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if after.Status != state.StatusDone {
+		t.Errorf("status = %q, want %q: the record still describes a file that arrived", after.Status, state.StatusDone)
+	}
+	if after.StartsAt != nil {
+		t.Errorf("starts_at = %v, want none: nothing is left waiting for a clock", after.StartsAt)
+	}
+}
+
 func orderOf(q *Queue) []string {
 	out := make([]string, 0, 4)
 	for _, s := range q.Snapshot() {

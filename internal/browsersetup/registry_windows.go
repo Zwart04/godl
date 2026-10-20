@@ -49,6 +49,39 @@ func keysPresent() bool {
 	return true
 }
 
+// keysTargets says where each browser table points right now, by key path.
+//
+// These keys are the machine's, not the process's: what they name is somebody's
+// working browser hook. Anything that has to rewrite them - a test above, a
+// future installer - needs to put back the exact value it found rather than a
+// path of its own, because "where my own godl-host.exe happens to be" is not
+// the same question as "where this was pointing".
+func keysTargets() map[string]string {
+	out := make(map[string]string, 3)
+	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+		if value, err := readDefault(key); err == nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// restoreKeys writes a snapshot taken by keysTargets back, and removes any key
+// the snapshot did not have. That second half is what makes a machine that was
+// not registered before restorable too: it goes back to being unregistered
+// rather than half-hooked to whatever the run left behind.
+func restoreKeys(snapshot map[string]string) error {
+	var errs []error
+	for _, key := range []string{chromeKey, edgeKey, mozKey} {
+		if value, ok := snapshot[key]; ok {
+			errs = append(errs, setDefault(key, value))
+			continue
+		}
+		errs = append(errs, deleteTree(registry.CURRENT_USER, key))
+	}
+	return errors.Join(errs...)
+}
+
 // setDefault creates the key if needed and makes its default value the
 // manifest path. A key left over from an older build keeps any other values
 // it had, which is why only the default value is touched.

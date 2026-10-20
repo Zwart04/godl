@@ -602,10 +602,14 @@ func (q *Queue) Resume(id string) error {
 	if q.busy(id) {
 		return errors.New("download is already running")
 	}
-	return q.update(id, func(d *state.Download) {
+	return q.update(id, func(d *state.Download) error {
+		if err := notFinished(d); err != nil {
+			return err
+		}
 		d.Status = state.StatusQueued
 		d.StartsAt = nil
 		d.Error = ""
+		return nil
 	})
 }
 
@@ -615,10 +619,14 @@ func (q *Queue) Retry(id string) error {
 	if q.busy(id) {
 		return errors.New("download is already running")
 	}
-	return q.update(id, func(d *state.Download) {
+	return q.update(id, func(d *state.Download) error {
+		if err := notFinished(d); err != nil {
+			return err
+		}
 		d.Status = state.StatusQueued
 		d.StartsAt = nil
 		d.Error = ""
+		return nil
 	})
 }
 
@@ -731,6 +739,11 @@ func (q *Queue) move(id string, step int) error {
 // only honest reading of "start it at nine" is "stop it now, start it at nine"
 // - and the worker has to be gone before this writes, or its own final save
 // would land afterwards and put "paused" back over the queue's copy.
+//
+// Stopped is not the same as unfinished. A worker on its way out can still
+// publish a whole file, and then there is nothing left to hold back: the
+// schedule answers ErrFinished rather than claim a download that has arrived
+// is waiting for a clock.
 func (q *Queue) Schedule(id string, at *time.Time) error {
 	if e := q.liveEntry(id); e != nil {
 		e.stop()
@@ -738,10 +751,14 @@ func (q *Queue) Schedule(id string, at *time.Time) error {
 			return err
 		}
 	}
-	return q.update(id, func(d *state.Download) {
+	return q.update(id, func(d *state.Download) error {
+		if err := notFinished(d); err != nil {
+			return err
+		}
 		d.StartsAt = at
 		d.Status = state.StatusQueued
 		d.Error = ""
+		return nil
 	})
 }
 
@@ -749,6 +766,26 @@ func (q *Queue) Schedule(id string, at *time.Time) error {
 // caller to write over it. It is a transient disagreement about who owns the
 // record, not a fault in the server, so it is answered as a conflict.
 var ErrBusy = errors.New("the transfer did not stop in time; try again")
+
+// ErrFinished is returned when a control arrived after the download it names
+// had already finished.
+//
+// Every one of them stops a transfer first, and a transfer on its way out can
+// still reach the end: the bytes are whole, the part file has been published
+// and there is nothing left to do. Writing over that record would put
+// "queued", "paused" or "cancelled" beside a file that has already arrived,
+// and the window would wait on a clock for a download with no first byte left
+// to wait for. Refusing leaves the record telling the truth about the disk,
+// which is the only answer a caller can act on.
+var ErrFinished = errors.New("this download finished before the change could be applied")
+
+// notFinished is the guard every control shares. See ErrFinished.
+func notFinished(d *state.Download) error {
+	if d.Status == state.StatusDone {
+		return ErrFinished
+	}
+	return nil
+}
 
 // ErrInFlight is returned when something has to touch a file a worker is
 // holding open. It describes the transfer rather than the request, so the API
@@ -847,12 +884,16 @@ func (q *Queue) Cancel(id string) error {
 		e.markDiscarded()
 		e.stop()
 	}
-	return q.update(id, func(d *state.Download) {
+	return q.update(id, func(d *state.Download) error {
+		if err := notFinished(d); err != nil {
+			return err
+		}
 		d.Status = state.StatusCancelled
 		d.Error = ""
 		if d.PartPath != "" {
 			_ = os.Remove(d.PartPath)
 		}
+		return nil
 	})
 }
 
@@ -871,11 +912,15 @@ func (q *Queue) Remove(id string) error {
 }
 
 func (q *Queue) rewrite(id string, status state.Status, clearError bool) error {
-	return q.update(id, func(d *state.Download) {
+	return q.update(id, func(d *state.Download) error {
+		if err := notFinished(d); err != nil {
+			return err
+		}
 		d.Status = status
 		if clearError {
 			d.Error = ""
 		}
+		return nil
 	})
 }
 
@@ -884,7 +929,13 @@ func (q *Queue) rewrite(id string, status state.Status, clearError bool) error {
 // Load, edit and save have to happen under the same lock or two callers can
 // interleave them, and the later save carries the earlier caller's copy of
 // every field it did not mean to change.
-func (q *Queue) update(id string, fn func(*state.Download)) error {
+//
+// The edit may refuse, and this is the only place it can. The condition it
+// tests and the write it declines to make have to be the same load: a caller
+// that checked first would be reading a record that somebody else - usually a
+// worker on its way out - has since finished, and would be answering for a
+// state the record is no longer in.
+func (q *Queue) update(id string, fn func(*state.Download) error) error {
 	q.recMu.Lock()
 	defer q.recMu.Unlock()
 
@@ -892,7 +943,9 @@ func (q *Queue) update(id string, fn func(*state.Download)) error {
 	if err != nil {
 		return err
 	}
-	fn(d)
+	if err := fn(d); err != nil {
+		return err
+	}
 	return q.Store.Save(d)
 }
 

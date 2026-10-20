@@ -20,12 +20,15 @@ func TestManifestsCarryAValidPathAndTheRightTrust(t *testing.T) {
 		t.Skip("the manifest layout is only meaningful for the browsers godl ships for")
 	}
 	t.Setenv(config.EnvHome, t.TempDir())
+	// Before the first write. This is the only moment the machine is still
+	// exactly as it was found, so a snapshot taken later would faithfully
+	// restore the test's own values.
+	restoreRegistration(t)
 
 	host := `C:\Users\Some One\godl\godl-host.exe`
 	if err := Register(host); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
-	restoreRegistration(t)
 
 	chrome := readManifest(t, ChromeHostName)
 	if chrome.Path != host {
@@ -69,11 +72,11 @@ func TestUnregisterLeavesNothingBehind(t *testing.T) {
 		t.Skip("registry keys only exist on Windows")
 	}
 	t.Setenv(config.EnvHome, t.TempDir())
+	restoreRegistration(t)
 
 	if err := Register(`C:\godl\godl-host.exe`); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
-	restoreRegistration(t)
 	if !Registered() {
 		t.Fatal("Registered() = false right after Register(), want true")
 	}
@@ -111,18 +114,21 @@ func TestUnregisterIsIdempotent(t *testing.T) {
 //
 // These tests touch the real per-user registry, and someone running them may
 // have a working godl registration they would not want a test run to remove.
-// The app re-registers on its next launch anyway, but leaving a developer's
-// browser unhooked after `go test` would still be a rude surprise.
+//
+// The values are read back rather than recomputed. Asking HostExePath() for a
+// path to re-register sounds equivalent and is not: under `go test` that is a
+// directory built moments ago and thrown away afterwards, so the browser is
+// left pointed at a manifest that no longer exists - or, if that lookup fails,
+// left unhooked altogether. Which is how a developer's extension goes quiet
+// after an innocent `go test`, and why the snapshot has to be of the machine
+// and not of the test binary.
 func restoreRegistration(t *testing.T) {
 	t.Helper()
-	wasRegistered := Registered()
+	before := keysTargets()
 	t.Cleanup(func() {
 		_ = Unregister()
-		if !wasRegistered {
-			return
-		}
-		if host, err := HostExePath(); err == nil {
-			_ = Register(host)
+		if err := restoreKeys(before); err != nil {
+			t.Errorf("putting the browser registration back: %v", err)
 		}
 	})
 }

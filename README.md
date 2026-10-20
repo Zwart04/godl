@@ -188,7 +188,7 @@ Open **godl** from the Start Menu (or the desktop icon the setup created).
 | **Stop** | Abandons the transfer and discards the partial file. |
 | **Limit** | Caps how fast the selected download may transfer, from 128 KB/s up or a figure of your own. It takes effect on the transfer already running, not on the next one. |
 | **Arrows** | Move the selected download earlier or later in the queue. The queue starts them in that order. Pressing one drops a column sort, so you see the queue's own order — the one the arrows act on. |
-| **Schedule** | Says when this download may begin. A transfer already under way is stopped and held; a paused, failed or discarded one is put back in the queue for that time. An empty box means now, which is how a schedule is cleared. |
+| **Schedule** | Says when this download may begin. A transfer already under way is stopped and held; a paused, failed or discarded one is put back in the queue for that time. An empty box means now, which is how a schedule is cleared. If the transfer finished on its way out, the control says so rather than pretend the file is still to come. |
 | **Category chip** | The category in its own column, and the way to change it. Picking another moves the file into that folder's folder. A download running right now has its file open, so its chip is off. |
 | **Folder** | Opens Explorer with the finished file selected. |
 | **Delete** | Removes the record. |
@@ -347,6 +347,14 @@ kept, because it has already begun and the only honest reading of "start it at
 nine" is "stop it now, start it at nine". `resume` and `retry` drop the
 schedule, since being told to go now is a newer answer to *when?* than the one
 on the record.
+
+Stopped is not the same as unfinished. A transfer on its way out can still
+reach the end — the bytes are whole and the part file has been published — and
+then there is nothing left to hold. Every control shares one rule in that
+case: `409` with *"this download finished before the change could be applied"*,
+and the record left `done`. Writing `queued`, `paused` or `cancelled` beside a
+file that has already arrived would have the window waiting on a clock for a
+download with no first byte left to wait for.
 
 `move-up` and `move-down` swap places with a neighbour and are answered against
 queue order — the order the list shows unless a column sort is over it. Off

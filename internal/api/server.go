@@ -397,9 +397,11 @@ func (s *Server) action(name string, fn func(*queue.Queue, string) error) http.H
 		if err := fn(s.Queue, id); err != nil {
 			// A move with nowhere to go describes the queue, not a fault in
 			// the request - answering 500 would tell the caller the server
-			// broke when it was already where they asked for.
+			// broke when it was already where they asked for. A control that
+			// found the download had finished is the same kind of answer: the
+			// server is fine, it simply has nothing left to change.
 			code := http.StatusInternalServerError
-			if errors.Is(err, queue.ErrAtEnd) {
+			if errors.Is(err, queue.ErrAtEnd) || errors.Is(err, queue.ErrFinished) {
 				code = http.StatusConflict
 			}
 			writeErr(w, code, err.Error())
@@ -486,10 +488,11 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		at = &parsed
 	}
 	if err := s.Queue.Schedule(id, at); err != nil {
-		// Stopping a transfer did not complete in time. That is a disagreement
-		// about who owns the record right now, not a fault in the server.
+		// Stopping a transfer did not complete in time, or it finished on its
+		// way out and there is nothing left to hold. Both describe the
+		// download rather than the request, so neither is the server breaking.
 		code := http.StatusInternalServerError
-		if errors.Is(err, queue.ErrBusy) {
+		if errors.Is(err, queue.ErrBusy) || errors.Is(err, queue.ErrFinished) {
 			code = http.StatusConflict
 		}
 		writeErr(w, code, err.Error())
