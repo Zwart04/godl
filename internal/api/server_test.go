@@ -138,6 +138,9 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		{"move-up", http.MethodPost, "/api/downloads/none/move-up", ""},
 		{"move-down", http.MethodPost, "/api/downloads/none/move-down", ""},
 		{"category", http.MethodPost, "/api/downloads/none/category", `{"category":"Music"}`},
+		{"clipboard offer", http.MethodGet, "/api/clipboard", ""},
+		{"clipboard accept", http.MethodPost, "/api/clipboard/accept", ""},
+		{"clipboard ignore", http.MethodPost, "/api/clipboard/ignore", ""},
 	}
 
 	for _, tc := range cases {
@@ -989,5 +992,159 @@ func TestScheduleTakesATimeAndRefusesWhatCannotBeHonoured(t *testing.T) {
 	rec = call(t, f, http.MethodPost, "/api/downloads/"+finished.ID+"/schedule", testToken, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("schedule a finished download: status = %d, want 409", rec.Code)
+	}
+}
+
+/* ── clipboard ──────────────────────────────────────────────────────────── */
+
+type clipResponse struct {
+	URL string `json:"url"`
+}
+
+func clipOffer(t *testing.T, f *fixture) string {
+	t.Helper()
+	rec := call(t, f, http.MethodGet, "/api/clipboard", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/clipboard: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out clipResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	return out.URL
+}
+
+func listCount(t *testing.T, f *fixture) int {
+	t.Helper()
+	rec := call(t, f, http.MethodGet, "/api/downloads", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status = %d", rec.Code)
+	}
+	var page struct {
+		Downloads []map[string]any `json:"downloads"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	return len(page.Downloads)
+}
+
+// A link copied once is offered once, and answering it puts it in the list
+// through the same path the Add button takes. A second way in would be a
+// second place for the safeguards to drift apart.
+func TestACopiedLinkIsOfferedAndTakenOnce(t *testing.T) {
+	f := newFixture(t)
+	f.server.Categories = category.Defaults()
+	srv := ranged(t, bytes.Repeat([]byte("z"), 4096))
+	link := srv.URL + "/taken.iso"
+
+	f.server.OfferLink(link)
+	if got := clipOffer(t, f); got != link {
+		t.Fatalf("offered %q, want %q", got, link)
+	}
+
+	rec := call(t, f, http.MethodPost, "/api/clipboard/accept", testToken, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("accept: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out addResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode accept: %v", err)
+	}
+	if out.Download.Dest == "" {
+		t.Fatal("accept made no download")
+	}
+	if out.Download.Category != "Programs" {
+		t.Errorf("category = %q, want Programs - a copy takes the ordinary add path, extension and all",
+			out.Download.Category)
+	}
+
+	// Taken, so the window does not ask about it a second time.
+	if got := clipOffer(t, f); got != "" {
+		t.Errorf("still offering %q after it was taken", got)
+	}
+}
+
+// The offer is let go only once a record exists. Consuming it first would mean
+// "could not reach the server" costs the link as well as the attempt, and the
+// only way to try again would be to copy it a second time.
+func TestACopiedLinkSurvivesAnAttemptThatFailed(t *testing.T) {
+	f := newFixture(t)
+	link := "http://127.0.0.1:9/nothing.bin"
+	f.server.OfferLink(link)
+
+	rec := call(t, f, http.MethodPost, "/api/clipboard/accept", testToken, "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("accept against a server that cannot be reached: status = %d, want 502", rec.Code)
+	}
+	if got := clipOffer(t, f); got != link {
+		t.Errorf("offered %q after the failure, want it kept so it can be tried again", got)
+	}
+	if n := listCount(t, f); n != 0 {
+		t.Errorf("a failed attempt left %d records behind, want none", n)
+	}
+}
+
+// Not now is an answer, and giving it twice is not a fault: the window is
+// clearing what it was showing.
+func TestIgnoringACopiedLinkPutsItDown(t *testing.T) {
+	f := newFixture(t)
+	f.server.OfferLink("https://example.com/a.zip")
+
+	rec := call(t, f, http.MethodPost, "/api/clipboard/ignore", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ignore: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := clipOffer(t, f); got != "" {
+		t.Errorf("still offering %q after it was ignored", got)
+	}
+	if rec = call(t, f, http.MethodPost, "/api/clipboard/ignore", testToken, ""); rec.Code != http.StatusOK {
+		t.Fatalf("ignoring nothing: status = %d, want 200", rec.Code)
+	}
+}
+
+func TestAcceptingWhenNoLinkIsWaitingSaysSo(t *testing.T) {
+	f := newFixture(t)
+	rec := call(t, f, http.MethodPost, "/api/clipboard/accept", testToken, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("accept with nothing waiting: status = %d, want 404", rec.Code)
+	}
+}
+
+// A link already being fetched is not an offer. The add path would answer
+// "duplicate", and a dialog opened only to say that is worse than saying
+// nothing at all.
+func TestALinkAlreadyInTheListIsNotOffered(t *testing.T) {
+	f := newFixture(t)
+	srv := ranged(t, bytes.Repeat([]byte("z"), 4096))
+
+	rec, out := add(t, f, srv.URL+"/busy.bin", "busy.bin", 2)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	f.server.OfferLink(out.Download.URL)
+	if got := clipOffer(t, f); got != "" {
+		t.Errorf("offered %q, which is already in the list", got)
+	}
+
+	// Finished is different: wanting it again is a real intention, so it is
+	// offered a second time rather than held back as a duplicate.
+	done := seedDone(t, f, "again.zip", "Archives")
+	f.server.OfferLink(done.URL)
+	if got := clipOffer(t, f); got != done.URL {
+		t.Errorf("offered %q, want a finished download offered again", got)
+	}
+}
+
+// The clipboard moves faster than a person does. Only the last copy is a live
+// offer; the ones before it had not been asked about yet, so dropping them
+// loses nothing.
+func TestOnlyTheLatestCopiedLinkIsOffered(t *testing.T) {
+	f := newFixture(t)
+	f.server.OfferLink("https://example.com/first.zip")
+	f.server.OfferLink("https://example.com/second.zip")
+
+	if got := clipOffer(t, f); got != "https://example.com/second.zip" {
+		t.Errorf("offered %q, want the most recent copy", got)
 	}
 }

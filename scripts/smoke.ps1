@@ -4,7 +4,9 @@
 # the user's real records are never touched, then proves four things in order:
 #   1. the manager comes up and answers on the endpoint the browser host reads
 #   2. the page is served with the token baked in, and is refused without it
-#   3. a download actually transfers, lands whole, and leaves no .part behind
+#   3. a download actually transfers, lands whole, and leaves no .part behind,
+#      filed by extension - and a link copied to the clipboard is only ever
+#      offered, never fetched on its own
 #   4. a second launch is refused, and closing the window returns the lock
 #
 # Nothing here is skipped on failure: every step reports and the script ends
@@ -45,9 +47,21 @@ function Wait-For($what, $ms, $test) {
 # permanently red results is worse than any bug the suite was written to find.
 $originPort = 8931
 $guiProc = $null
+# The clipboard belongs to every program on the desktop. Section 3e borrows it
+# and puts back what it found, so both are recorded before anything is touched.
+$script:hadClip = $null
+$script:clipTouched = $false
 
 function Cleanup {
     $ErrorActionPreference = 'SilentlyContinue'
+    if ($script:clipTouched) {
+        # Text only: an image cannot be carried in a variable, and a test that
+        # overwrote one should say so rather than claim it put everything back.
+        try {
+            if ($null -eq $script:hadClip) { Set-Clipboard -Value '' }
+            else { Set-Clipboard -Value $script:hadClip }
+        } catch { }
+    }
     foreach ($c in Get-NetTCPConnection -LocalPort $originPort -State Listen) {
         $p = Get-Process -Id $c.OwningProcess
         # Only a node process: if something else owns this port the test
@@ -396,6 +410,85 @@ Check "category change recorded" ($musicAfter.category -eq "Documents") "categor
 Check "category change moved the file" ($musicAfter.dest -match '[\\/]Documents[\\/]') "dest=$($musicAfter.dest)"
 Check "the moved file exists" (Test-Path $musicAfter.dest) "not found: $($musicAfter.dest)"
 Check "the old file is gone" (-not (Test-Path $musicRec.dest)) "still at $($musicRec.dest)"
+
+# ── 3e. a copied link is offered, never taken ───────────────────────────────
+$script:hadClip = $null
+try { $script:hadClip = Get-Clipboard -Raw -ErrorAction Stop } catch { $script:hadClip = $null }
+$script:clipTouched = $true
+
+function Put-Clipboard($text) {
+    # godl reads the clipboard once a second and holds it only for the read,
+    # but a collision lands on whichever of the two got there first. Retrying
+    # turns a lost race into a delay instead of an abort.
+    for ($i = 0; $i -lt 20; $i++) {
+        try { Set-Clipboard -Value $text; return $true } catch { Start-Sleep -Milliseconds 100 }
+    }
+    return $false
+}
+
+function Clipboard-Url {
+    $b = (Invoke-Api "/api/clipboard" "GET" $true $null).body
+    try {
+        $j = $b | ConvertFrom-Json
+        return [string]$j.url
+    } catch {
+        return $null
+    }
+}
+
+Check "clipboard endpoint answers" ((Invoke-Api "/api/clipboard" "GET" $true $null).code -eq 200) "GET /api/clipboard did not answer 200"
+Check "nothing is offered yet" ((Clipboard-Url) -eq "") "already offering: $(Clipboard-Url)"
+
+# The sheet has to be in the page before it can ever be opened.
+Check "page offers the copied-link sheet" ($page.Content -match 'id="cl-yes"') "no copied-link sheet in the served page"
+
+$copied = "http://127.0.0.1:$originPort/copied.bin"
+Check "a link can be put on the clipboard" (Put-Clipboard $copied) "Set-Clipboard failed 20 times"
+
+$seen = Wait-For "the copied link to be offered" 6000 { $u = Clipboard-Url; if ($u) { $u } else { $null } }
+Check "a copied link is offered" ($seen -eq $copied) "offered '$seen', want '$copied'"
+
+# Accepting goes down the same path the Add button takes - the same probe, the
+# same validation, the same filing by extension.
+$acc = Invoke-Api "/api/clipboard/accept" "POST" $true $null
+Check "the copied link is accepted" ($acc.code -eq 201) "got $($acc.code): $($acc.body)"
+$copiedRec = ($acc.body | ConvertFrom-Json).download
+Check "the copy was filed by its extension" ($copiedRec.category -eq "Other") "category=$($copiedRec.category)"
+Check "the offer is given up once taken" ((Clipboard-Url) -eq "") "still offering: $(Clipboard-Url)"
+
+$copiedDone = Wait-For "the copied download to finish" 90000 {
+    $d = ((Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json).downloads |
+        Where-Object { $_.id -eq $copiedRec.id }
+    if ($d -and $d.status -eq 'done') { 'done' } else { $null }
+}
+Check "the copied download completed" ([bool]$copiedDone) "did not reach done in 90s"
+# Guarded: a refusal above would leave this null, and Test-Path refuses a null
+# path outright - which would abort the run instead of failing one check.
+Check "the copied download landed" ($copiedRec -and (Test-Path $copiedRec.dest)) "not found: $($copiedRec.dest)"
+
+# Nothing waiting: accepting must say so rather than invent an empty download.
+$none = Invoke-Api "/api/clipboard/accept" "POST" $true $null
+Check "accepting when nothing is waiting says so" ($none.code -eq 404) "got $($none.code)"
+
+# A second copy is a second offer.
+$copied2 = "http://127.0.0.1:$originPort/copied-too.bin"
+Put-Clipboard $copied2 | Out-Null
+$seen2 = Wait-For "the second copy to be offered" 6000 { $u = Clipboard-Url; if ($u) { $u } else { $null } }
+Check "a second copy is offered too" ($seen2 -eq $copied2) "offered '$seen2', want '$copied2'"
+
+# Not now puts it down - and saying so twice is not a fault, because the window
+# is clearing what it was showing rather than reporting one.
+$ign = Invoke-Api "/api/clipboard/ignore" "POST" $true $null
+Check "a copied link can be dismissed" ($ign.code -eq 200) "got $($ign.code)"
+Check "the dismissed link is gone" ((Clipboard-Url) -eq "") "still offering: $(Clipboard-Url)"
+$ign2 = Invoke-Api "/api/clipboard/ignore" "POST" $true $null
+Check "dismissing nothing is not an error" ($ign2.code -eq 200) "got $($ign2.code)"
+
+# Prose that mentions an address is not an address. The wait has to outlast a
+# watcher tick, or "not yet" would be counted as "not ever".
+Put-Clipboard "see https://example.com/for-it" | Out-Null
+Start-Sleep -Milliseconds 3500
+Check "prose is not offered" ((Clipboard-Url) -eq "") "offered: $(Clipboard-Url)"
 
 # ── screenshot with a real row on screen ───────────────────────────────────
 try {

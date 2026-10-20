@@ -91,6 +91,24 @@ implementation is not.
 - A category's folder is created when it is needed, including again if you
   tidy it away while downloads still point at it
 
+**Links you copy**
+- godl watches the clipboard for an address and asks before fetching anything:
+  a dialog with the link in full and two buttons, and nothing is downloaded
+  until one of them is pressed. Copying a URL never starts a transfer by itself
+- Only a bare `http` or `https` address that makes up the whole of what was
+  copied is offered. A sentence with a link in the middle is prose, and prose is
+  not a file
+- One copy is one offer. The next one is offered when you copy something else,
+  and a link already in the list is not offered at all
+- If the attempt fails, the link stays on offer rather than disappearing with
+  the error - a server that could not be reached should not cost you the address
+  as well as the attempt
+- Reads the clipboard through Windows itself, from the process already running:
+  no helper, no injection, and it is opened only for as long as the read takes
+  so other programs are never held up by it
+- On by default in the window, off in `--serve` unless started with
+  `--clipboard`, and `godl.exe --no-clipboard` turns it off for good
+
 **Interface**
 - A native desktop window, not a browser tab: its own process, its own taskbar
   entry, its own line in Task Manager
@@ -176,6 +194,12 @@ Open **godl** from the Start Menu (or the desktop icon the setup created).
 | **Delete** | Removes the record. |
 | **Close the window** | If transfers are running, you are asked first. In-flight ones are paused; queued ones start again on the next launch. |
 
+**A link you copy.** Copy a bare `http` or `https` address and a sheet appears
+with it in full and two buttons: **Download** puts it in the list through the
+same path **Add** uses, and **Not now** puts it down. Nothing is fetched until
+you choose; a copy on its own never starts a transfer. Text that merely
+mentions a link is ignored, as is anything already in the list.
+
 Everything lives in `%APPDATA%\godl`. Setting `GODL_HOME` redirects all of it
 elsewhere, which is how the test suite runs against a scratch directory.
 
@@ -193,6 +217,16 @@ These two commands are only for repairing it by hand:
 & "$env:LOCALAPPDATA\Programs\godl\godl.exe" --register-browser   # rewrites the keys
 & "$env:LOCALAPPDATA\Programs\godl\godl.exe" --unregister-browser # removes them
 ```
+
+**Switches** — every one of them optional, and every one on the same binary:
+
+| Switch | What it does |
+| --- | --- |
+| `--register-browser` | Writes the Chrome, Edge and Firefox keys |
+| `--unregister-browser` | Removes them |
+| `--serve` | Runs the same engine with no window; <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it |
+| `--clipboard` | With `--serve`, watches the clipboard the way the window does |
+| `--no-clipboard` | Turns the watcher off for the window |
 
 **2. Load the extension**
 
@@ -241,6 +275,7 @@ token, one place where a button can be wrong.
 | `internal/engine` | Segmented transfer, range planning, speed accounting, SHA-256 verification |
 | `internal/queue` | Scheduling, concurrency limits, status transitions |
 | `internal/category` | Category list, extension rules, folder names kept inside the download directory |
+| `internal/clipboard` | Reading the clipboard for a link worth offering, and deciding what counts as one |
 | `internal/state` | On-disk records, atomic writes, recovery on start |
 | `internal/api` | The loopback HTTP control plane and the served interface |
 | `internal/host` | The native messaging protocol and its client |
@@ -259,6 +294,9 @@ A bearer token is created on first run and stored at
 | `GET` | `/api/health` | Liveness check |
 | `GET` | `/api/downloads` | Every record with live progress |
 | `GET` | `/api/categories` | The categories in force, in the order they are shown |
+| `GET` | `/api/clipboard` | The copied link waiting for an answer, if any |
+| `POST` | `/api/clipboard/accept` | Download the waiting link, through the ordinary add path |
+| `POST` | `/api/clipboard/ignore` | Put the waiting link down |
 | `POST` | `/api/downloads` | Add a download |
 | `POST` | `/api/downloads/{id}/pause` | Pause |
 | `POST` | `/api/downloads/{id}/resume` | Resume |
@@ -382,19 +420,20 @@ after themselves even when a check fails, so one red run cannot poison the
 next.
 
 ```powershell
-.\scripts\smoke.ps1            # 29 checks: launch, auth, transfer, shutdown
-.\scripts\test-installer.ps1   # 24 checks: install, shortcuts, registration, uninstall
+.\scripts\smoke.ps1            # launch, auth, transfer, filing, clipboard, shutdown
+.\scripts\test-installer.ps1   # install, shortcuts, registration, uninstall
 ```
 
 `smoke.ps1` starts the real `godl.exe` with `GODL_HOME` pointed at a scratch
 directory, transfers 32 MB from a local range-supporting server, and checks
-that the file arrives byte-for-byte, that a second launch is refused rather
-than becoming a second scheduler, and that closing the window releases the
-single-instance lock.
+that the file arrives byte-for-byte, that it is filed under its category, that
+a link copied to the clipboard is only ever offered, that a second launch is
+refused rather than becoming a second scheduler, and that closing the window
+releases the single-instance lock. It puts the clipboard back afterwards.
 
-There are 52 unit tests covering segment planning, resume and restart,
-concurrency limits, state recovery, the HTTP control API, the native messaging
-protocol, and browser registration.
+Unit tests cover segment planning, resume and restart, concurrency limits,
+state recovery, the HTTP control API, categories and folder rules, the
+clipboard watcher, the native messaging protocol, and browser registration.
 
 Set `GODL_HOME` to a scratch directory to run against a throwaway
 configuration:
@@ -451,7 +490,7 @@ godl/
 - [x] Per-download speed limit, set when adding or moved while a transfer runs
 - [x] Queue ordering and a scheduled start
 - [x] Download categories and folder rules
-- [ ] Clipboard monitor for copied links
+- [x] Clipboard monitor for copied links
 
 ## License
 

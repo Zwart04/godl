@@ -27,6 +27,7 @@ import (
 
 	"godl/internal/api"
 	"godl/internal/category"
+	"godl/internal/clipboard"
 	"godl/internal/config"
 	"godl/internal/engine"
 	"godl/internal/queue"
@@ -44,6 +45,13 @@ type Options struct {
 	// record - see state.Download.SpeedLimit. A manager-wide cap would need
 	// one bucket shared by every transfer, and nothing yet asks for one, so
 	// there is deliberately no field here pretending otherwise.
+
+	// NoClipboard stops the link watcher. It is on unless asked otherwise,
+	// because a link already on the clipboard is the one thing this process
+	// could offer that nobody had to type twice - but reading the clipboard is
+	// reading something shared with the whole desktop, and someone who does not
+	// want that said so gets to say so.
+	NoClipboard bool
 }
 
 // ErrAlreadyRunning reports that another manager owns this directory.
@@ -63,6 +71,12 @@ type Instance struct {
 	runDone chan error
 	httpSrv *http.Server
 	release func()
+
+	// watch is the clipboard watcher, stopped on the way out like everything
+	// else. Leaving it running would keep a goroutine reading a shared resource
+	// for as long as the process happened to be alive after everything else had
+	// already been told to go.
+	watch *clipboard.Monitor
 
 	mu      sync.Mutex
 	stopped bool
@@ -136,6 +150,16 @@ func Start(o Options) (*Instance, error) {
 	}
 	go func() { _ = hs.Serve(ln) }()
 
+	// The watcher reads the clipboard itself rather than asking the window to,
+	// so a link is caught even while the list is scrolled, the sheet is open, or
+	// no window is looking at all. It proposes; nothing is downloaded until the
+	// window says yes.
+	var watch *clipboard.Monitor
+	if !o.NoClipboard {
+		watch = clipboard.New(clipboard.Windows{}, time.Second)
+		watch.Start(srv.OfferLink)
+	}
+
 	return &Instance{
 		Queue:    q,
 		API:      srv,
@@ -144,6 +168,7 @@ func Start(o Options) (*Instance, error) {
 		runDone:  runDone,
 		httpSrv:  hs,
 		release:  release,
+		watch:    watch,
 	}, nil
 }
 
@@ -170,6 +195,10 @@ func (i *Instance) Shutdown(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
 	var err error
+
+	if i.watch != nil {
+		i.watch.Stop()
+	}
 
 	i.cancel()
 	wait := time.Until(deadline)

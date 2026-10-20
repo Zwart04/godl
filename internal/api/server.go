@@ -69,6 +69,15 @@ type Server struct {
 	web   fs.FS
 	shell string
 	prep  error
+
+	// clipMu guards clipLink, the address the watcher has put forward and the
+	// window has not yet answered.
+	//
+	// It is a separate mutex rather than mu because mu is held across work that
+	// has nothing to do with this, and a captured link is offered from the
+	// watcher's own goroutine while a request may be answering another one.
+	clipMu   sync.Mutex
+	clipLink string
 }
 
 // New builds a server with defaults suited to a local manager.
@@ -116,6 +125,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/health", s.authed(http.HandlerFunc(s.handleHealth)))
 	mux.Handle("GET /api/downloads", s.authed(http.HandlerFunc(s.handleList)))
 	mux.Handle("GET /api/categories", s.authed(http.HandlerFunc(s.handleCategories)))
+	mux.Handle("GET /api/clipboard", s.authed(http.HandlerFunc(s.handleClipboardOffer)))
+	mux.Handle("POST /api/clipboard/accept", s.authed(http.HandlerFunc(s.handleClipboardAccept)))
+	mux.Handle("POST /api/clipboard/ignore", s.authed(http.HandlerFunc(s.handleClipboardIgnore)))
 	mux.Handle("POST /api/downloads", s.authed(http.HandlerFunc(s.handleAdd)))
 
 	mux.Handle("POST /api/downloads/{id}/pause", s.authed(s.action("pause", func(q *queue.Queue, id string) error {
@@ -234,6 +246,22 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	s.add(w, r, req)
+}
+
+// add runs the whole of "a URL becomes a download" - validate, check the
+// category, answer a duplicate, probe, name, file, save, start - and writes the
+// one answer.
+//
+// It is its own function because there is exactly one shape to this work. The
+// page's Add button, the browser's host, and a link copied to the clipboard are
+// three ways of arriving at the same decision, and three copies of it would be
+// three places for the safeguards to drift apart.
+//
+// It takes the request as well as the response writer because the probe runs on
+// the caller's context: a window that has navigated away should not leave a
+// probe going on its behalf.
+func (s *Server) add(w http.ResponseWriter, r *http.Request, req AddRequest) {
 	req.URL = strings.TrimSpace(req.URL)
 	if !isHTTPURL(req.URL) {
 		writeErr(w, http.StatusBadRequest, "only http and https URLs can be downloaded")
@@ -473,6 +501,106 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 
 	next, _ := s.find(id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
+}
+
+// OfferLink puts a link the watcher has just seen in front of the window.
+//
+// It replaces whatever has not been answered. The clipboard moves faster than
+// a person does: copying three addresses in a row is ordinary, and only the
+// last one is still a live offer. Nothing is lost by dropping the others,
+// because none of them had been asked about.
+//
+// A link already in the list is not an offer at all. The add path would answer
+// "duplicate", but a dialog opened to report that is a worse answer than not
+// asking, and someone who genuinely wants it again can add it by hand.
+func (s *Server) OfferLink(url string) {
+	for _, snap := range s.Queue.Snapshot() {
+		if snap.URL == url && snap.Status != state.StatusDone && snap.Status != state.StatusCancelled {
+			return
+		}
+	}
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	s.clipLink = url
+}
+
+// takeLink hands back the waiting address and clears it, so one copy is
+// offered once even with more than one view of the page open.
+func (s *Server) takeLink() string {
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	link := s.clipLink
+	s.clipLink = ""
+	return link
+}
+
+// handleClipboardOffer reports the waiting link, or an empty url when there is
+// nothing to answer. The window asks on a timer, and the empty answer is the
+// ordinary one - so it is a normal response carrying no error, not a 404 that
+// would put an error in the console every few seconds for the life of the app.
+func (s *Server) handleClipboardOffer(w http.ResponseWriter, r *http.Request) {
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"url": s.clipLink})
+}
+
+// answered records the status a handler wrote, so a caller can tell whether
+// the request achieved anything.
+//
+// It wraps rather than rewrites: add() writes its own answer in several
+// places, and a second copy of those status decisions would be a second place
+// for them to drift apart.
+type answered struct {
+	http.ResponseWriter
+	status int
+}
+
+func (a *answered) WriteHeader(code int) {
+	a.status = code
+	a.ResponseWriter.WriteHeader(code)
+}
+
+// handleClipboardAccept downloads the waiting link through the same path the
+// page's own Add button takes: the same validation, the same probe, the same
+// refusal when the server will not say what it has.
+//
+// The offer is let go only once a record exists. Taking it first would mean a
+// server that could not be reached costs the link as well as the attempt, and
+// the only way to try again would be to copy it a second time - which is a
+// strange price for a copied link to carry. The compare on the way out stops a
+// newer capture, put in place while this one was being probed, from being swept
+// away by this one's success.
+func (s *Server) handleClipboardAccept(w http.ResponseWriter, r *http.Request) {
+	s.clipMu.Lock()
+	link := s.clipLink
+	s.clipMu.Unlock()
+	if link == "" {
+		writeErr(w, http.StatusNotFound, "there is no captured link waiting")
+		return
+	}
+
+	rec := &answered{ResponseWriter: w}
+	s.add(rec, r, AddRequest{URL: link})
+
+	if rec.status != http.StatusCreated && rec.status != http.StatusOK {
+		return // kept: the window shows what went wrong and may try again
+	}
+
+	s.clipMu.Lock()
+	if s.clipLink == link {
+		s.clipLink = ""
+	}
+	s.clipMu.Unlock()
+}
+
+// handleClipboardIgnore puts the waiting link down without downloading it.
+//
+// It succeeds whether or not anything was waiting: the window is clearing what
+// it was showing, and reporting that nothing had been showing would turn a
+// dismissal into an error in the console.
+func (s *Server) handleClipboardIgnore(w http.ResponseWriter, r *http.Request) {
+	s.takeLink()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleCategories is the list the window offers, in the order it shows them.

@@ -212,6 +212,22 @@
   </div>
 </div>
 
+<div class="scrim" id="clip" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cl-title">
+    <h2 id="cl-title">Link copied</h2>
+    <p class="sheet-note">godl saw this address on the clipboard.</p>
+    <p class="clip-url" id="cl-url"></p>
+    <p class="sheet-hint">Nothing has been fetched. A copy is never a download on its own - pressing Download is.</p>
+
+    <p class="sheet-error" id="cl-error" hidden></p>
+
+    <div class="sheet-actions">
+      <button class="tool" id="cl-no" type="button">Not now</button>
+      <button class="tool primary" id="cl-yes" type="button">Download</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <script src="/app.js"></script>

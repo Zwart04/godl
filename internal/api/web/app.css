@@ -506,12 +506,28 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* The address itself, shown whole. This is the one place a person has to read
+   it to decide, and an ellipsized middle is precisely what hides the part that
+   matters - so it wraps instead of widening the sheet off the screen. */
+.clip-url {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-all;
+  user-select: text;
+}
+
 .sheet-error {
   margin: 0 0 12px;
   font-size: 12px;
   color: var(--red);
 }
-
 .sheet-actions {
   display: flex;
   justify-content: flex-end;

@@ -45,6 +45,12 @@ const (
 )
 
 func main() {
+	// Whether the clipboard is read is decided here, once, rather than by a
+	// flag package: this program is started by double-clicking far more often
+	// than it is typed at, and a usage page printed at someone who only meant
+	// to open the app would be worse than useless.
+	noClipboard := hasArg("--no-clipboard")
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--register-browser":
@@ -57,17 +63,33 @@ func main() {
 			notify(title, unregisterBrowser())
 			return
 		case "--serve":
-			serve()
+			// Headless is the other way round: a server with nobody at the
+			// desktop has no reason to read the desktop's clipboard, so it
+			// watches only when handed --clipboard. The window's switch stops
+			// what is on by default; this one starts what is off. Spelled
+			// separately so neither reads as the other.
+			serve(hasArg("--clipboard"))
 			return
 		}
 	}
-	runWindow()
+	runWindow(noClipboard)
 }
 
-func runWindow() {
+// hasArg reports whether the process was handed a word.
+func hasArg(word string) bool {
+	for _, a := range os.Args[1:] {
+		if a == word {
+			return true
+		}
+	}
+	return false
+}
+
+func runWindow(noClipboard bool) {
 	inst, err := app.Start(app.Options{
 		Parallel:    3,
 		Connections: 8,
+		NoClipboard: noClipboard,
 	})
 	if err != nil {
 		if errors.Is(err, app.ErrAlreadyRunning) {
@@ -130,10 +152,14 @@ func runWindow() {
 // The interface does not disappear - it moves to the recorded endpoint, which
 // any browser on the machine can open. Ctrl+C stops it and persists the queue
 // the same way closing the window does.
-func serve() {
+func serve(watch bool) {
 	inst, err := app.Start(app.Options{
 		Parallel:    3,
 		Connections: 8,
+		// Options is named for what to stop, which is the window's view of it;
+		// flipping it here keeps that one field rather than adding a second
+		// one that means the opposite.
+		NoClipboard: !watch,
 	})
 	if err != nil {
 		notify(title, "godl could not start.\n\n"+err.Error())

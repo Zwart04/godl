@@ -66,6 +66,11 @@ const ui = {
   ctErr: $('ct-error'),
   ctCancel: $('ct-cancel'),
   ctOk: $('ct-ok'),
+  clipModal: $('clip'),
+  clUrl: $('cl-url'),
+  clErr: $('cl-error'),
+  clNo: $('cl-no'),
+  clYes: $('cl-yes'),
   toast: $('toast'),
 };
 
@@ -741,6 +746,95 @@ async function submitCategory() {
   }
 }
 
+/* ── copied-link sheet ──────────────────────────────────────────────────── */
+
+/* The address the manager is holding out. It is watched rather than assumed:
+ * a window is opened by a person, and the thing they were doing when they
+ * copied the link might have been closing a sheet. */
+let clipLink = '';
+
+function anySheetOpen() {
+  return !ui.clipModal.hidden || !ui.catModal.hidden || !ui.schedModal.hidden ||
+    !ui.limitModal.hidden || !ui.modal.hidden;
+}
+
+function openClipboard(url) {
+  clipLink = url;
+  ui.clUrl.textContent = url;
+  ui.clUrl.title = url;
+  ui.clErr.hidden = true;
+  ui.clErr.textContent = '';
+  ui.clipModal.hidden = false;
+  setTimeout(() => ui.clYes.focus(), 40);
+}
+
+/* Not now is a real answer, and it is handed back so the same link is not put
+ * forward again on the next tick. The sheet is hidden only once the manager has
+ * taken it: otherwise a poll already on its way would find it still waiting and
+ * open it again before the dismissal had landed. */
+async function closeClipboard() {
+  try {
+    await api('/api/clipboard/ignore', { method: 'POST' });
+  } catch (_) {
+    /* the next copy replaces the offer regardless */
+  }
+  ui.clipModal.hidden = true;
+  clipLink = '';
+}
+
+function clipboardError(message) {
+  ui.clErr.textContent = message;
+  ui.clErr.hidden = false;
+}
+
+async function submitClipboard() {
+  const url = clipLink;
+  if (!url) return;
+
+  ui.clYes.disabled = true;
+  ui.clYes.textContent = 'Adding…';
+  try {
+    const res = await api('/api/clipboard/accept', { method: 'POST' });
+    ui.clipModal.hidden = true;
+    clipLink = '';
+    const d = res && res.download;
+    toast(res && res.duplicate
+      ? 'Already in the list.'
+      : 'Added ' + (d && d.name ? d.name : url) + '.', false);
+    await refresh();
+  } catch (err) {
+    // The offer is left standing on purpose. The manager only lets go of a
+    // captured link once a record exists, so a server that could not be
+    // reached gets a message with a working button under it rather than a
+    // dead end that only another copy could restart.
+    clipboardError(err.message);
+  } finally {
+    ui.clYes.disabled = false;
+    ui.clYes.textContent = 'Download';
+  }
+}
+
+/* Asked once a second, on its own rhythm rather than the list's: a captured
+ * link is a human-speed event, and it is only ever opened when nothing else is
+ * being asked of the window. A dialog appearing over a dialog is how someone
+ * presses the wrong button. */
+async function pollClipboard() {
+  if (anySheetOpen()) return;
+  let res;
+  try {
+    res = await api('/api/clipboard');
+  } catch (_) {
+    // refresh() already reports connectivity once per break; this must not
+    // add a second complaint about the same thing.
+    return;
+  }
+  const url = res && typeof res.url === 'string' ? res.url : '';
+  // Checked again after the await: a sheet opened while this was in flight is
+  // a request the user is already answering, and this would take it over.
+  if (!url || url === clipLink || anySheetOpen()) return;
+  openClipboard(url);
+}
+
 /* Shows the custom box only when "Custom" is chosen, and focuses it so the
  * next keystroke lands somewhere useful. */
 function wireLimitSelect(sel, custom) {
@@ -791,6 +885,10 @@ ui.ctCancel.addEventListener('click', closeCategory);
 ui.ctOk.addEventListener('click', submitCategory);
 ui.ctWhere.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCategory(); });
 
+ui.clipModal.addEventListener('click', (e) => { if (e.target === ui.clipModal) closeClipboard(); });
+ui.clNo.addEventListener('click', closeClipboard);
+ui.clYes.addEventListener('click', submitClipboard);
+
 wireLimitSelect(ui.mLimit, ui.mLimitCustom);
 wireLimitSelect(ui.lSpeed, ui.lSpeedCustom);
 
@@ -806,6 +904,12 @@ ui.remove.addEventListener('click', () => act('remove'));
 document.addEventListener('keydown', (e) => {
   // The sheets stack, so the one on top answers first - otherwise Escape
   // would close two of them at once and leave the caller unsure what changed.
+  // A copied link is drawn over everything, because it is a question with
+  // nothing behind it the person meant to answer.
+  if (!ui.clipModal.hidden) {
+    if (e.key === 'Escape') closeClipboard();
+    return;
+  }
   if (!ui.catModal.hidden) {
     if (e.key === 'Escape') closeCategory();
     return;
@@ -902,3 +1006,4 @@ async function bootstrap() {
 
 bootstrap();
 setInterval(refresh, 700);
+setInterval(pollClipboard, 1000);
