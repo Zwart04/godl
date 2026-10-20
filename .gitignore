@@ -10,8 +10,8 @@
 # project has no npm step that would need them checked in.
 frontend/wailsjs/
 
-# The installer's payload, packed fresh by build-setup.ps1 on every build.
-# The source of it is build/bin, which is already ignored above.
+# The installer's payload, packed fresh on every build from build/bin, which
+# is already ignored above.
 cmd/godl-setup/payload/*.zip
 
 # Go build and test artefacts.
