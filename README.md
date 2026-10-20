@@ -415,6 +415,11 @@ gofmt -l .                     # must print nothing
 go vet ./...                   # must exit 0
 go test -count=3 -shuffle=on ./...
 
+# The race detector needs cgo, and cgo needs a C compiler on PATH - MinGW-w64
+# does the job. It can then be built into the program itself with
+# `wails build -race`, and the suite below runs that binary end to end.
+go test -race -count=1 ./...
+
 # The installer is behind a build tag, so the checks above skip it by
 # design; check it separately once a payload exists.
 .\build-setup.ps1
