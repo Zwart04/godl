@@ -78,6 +78,19 @@ type Server struct {
 	// watcher's own goroutine while a request may be answering another one.
 	clipMu   sync.Mutex
 	clipLink string
+
+	// AutoAccept turns a browser capture straight into a download, which is
+	// what a headless manager must do. There is no window to ask, so a
+	// capture nobody can answer would be a download that quietly never
+	// happens - and a manager that silently drops links is worse than no
+	// manager at all.
+	AutoAccept bool
+
+	// capMu guards captures, for the same reason clipMu is separate from mu:
+	// the browser's handover arrives on its own goroutine while a request
+	// may be answering a different one.
+	capMu    sync.Mutex
+	captures []*Capture
 }
 
 // New builds a server with defaults suited to a local manager.
@@ -128,6 +141,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/clipboard", s.authed(http.HandlerFunc(s.handleClipboardOffer)))
 	mux.Handle("POST /api/clipboard/accept", s.authed(http.HandlerFunc(s.handleClipboardAccept)))
 	mux.Handle("POST /api/clipboard/ignore", s.authed(http.HandlerFunc(s.handleClipboardIgnore)))
+	mux.Handle("GET /api/captures", s.authed(http.HandlerFunc(s.handleCaptures)))
+	mux.Handle("POST /api/captures", s.authed(http.HandlerFunc(s.handleCaptureAdd)))
+	mux.Handle("POST /api/captures/{id}/accept", s.authed(http.HandlerFunc(s.handleCaptureAccept)))
+	mux.Handle("POST /api/captures/{id}/ignore", s.authed(http.HandlerFunc(s.handleCaptureIgnore)))
 	mux.Handle("POST /api/downloads", s.authed(http.HandlerFunc(s.handleAdd)))
 
 	mux.Handle("POST /api/downloads/{id}/pause", s.authed(s.action("pause", func(q *queue.Queue, id string) error {
@@ -222,6 +239,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"downloads": s.Queue.Snapshot()})
+}
+
+// Capture is a download the browser has handed over and nobody has answered
+// yet: the address, the name the page gave it, and the credentials the
+// transfer will need once someone says start.
+//
+// It is the pause between "the browser let go" and "the person decided",
+// which is the whole of what a download dialog is for. Before this existed a
+// capture went straight into the queue, so clicking a link in the browser
+// produced a finished file somewhere the person was not looking and nothing
+// on screen in between - the browser had already erased its own row by then,
+// so from the chair in front of it the download simply vanished.
+type Capture struct {
+	ID       string `json:"id"`
+	URL      string `json:"url"`
+	Filename string `json:"filename"`
+	Category string `json:"category,omitempty"`
+
+	// Connections is what the page asked for, kept so the window can offer
+	// the same number back rather than falling to a default the person had
+	// already chosen away from.
+	Connections int `json:"connections,omitempty"`
+
+	// Size is what the server reported once someone looked. Zero means not
+	// asked yet, or that the server would not say - never "no bytes".
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"created_at"`
+
+	// The credentials stay on the server. The window polls for captures
+	// every fraction of a second and has no use for them, and a session
+	// cookie has no business being handed to a page that merely draws it.
+	Cookie    string `json:"-"`
+	Referer   string `json:"-"`
+	UserAgent string `json:"-"`
 }
 
 // AddRequest is what the UI and the browser host send when a link arrives.
@@ -604,6 +655,182 @@ func (s *Server) handleClipboardAccept(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClipboardIgnore(w http.ResponseWriter, r *http.Request) {
 	s.takeLink()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCaptureAdd is the browser's handover arriving as a question rather
+// than a decision.
+//
+// The window answers it. When there is no window - a manager started with
+// --serve - there is nobody to ask, so the capture becomes a download at once:
+// asking nobody is the same as not asking, and quietly dropping the link would
+// be worse than either.
+func (s *Server) handleCaptureAdd(w http.ResponseWriter, r *http.Request) {
+	var req AddRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if !isHTTPURL(req.URL) {
+		writeErr(w, http.StatusBadRequest, "only http and https URLs can be downloaded")
+		return
+	}
+
+	if s.AutoAccept {
+		s.add(w, r, req)
+		return
+	}
+
+	c := &Capture{
+		ID:          state.NewID(),
+		URL:         req.URL,
+		Filename:    strings.TrimSpace(req.Filename),
+		Category:    strings.TrimSpace(req.Category),
+		Connections: req.Connections,
+		Cookie:      req.Cookie,
+		Referer:     req.Referer,
+		UserAgent:   req.UserAgent,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// The same address twice is the same question twice. The newest wins, the
+	// way the clipboard offer does, because only the latest click is one the
+	// person is looking at.
+	s.capMu.Lock()
+	kept := s.captures[:0]
+	for _, other := range s.captures {
+		if other.URL != c.URL {
+			kept = append(kept, other)
+		}
+	}
+	s.captures = append(kept, c)
+	s.capMu.Unlock()
+
+	// The size is asked for afterwards, on purpose. A dialog that waits on a
+	// server which is slow to answer would be a dialog that is slow to
+	// appear, and the address is the only thing needed to show it.
+	go s.probeSize(c)
+
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "capture": c})
+}
+
+// probeSize fills in what the server says the file weighs.
+//
+// It runs after the dialog is already up, so a server that never answers
+// costs the size line and nothing else.
+func (s *Server) probeSize(c *Capture) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.probeTimeout())
+	defer cancel()
+
+	hints := engine.Hints{Cookie: c.Cookie, Referer: c.Referer, UserAgent: c.UserAgent}
+	probe, err := engine.Probe(ctx, s.Client, c.URL, hints)
+	if err != nil || probe.TotalSize <= 0 {
+		return
+	}
+
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	for _, other := range s.captures {
+		if other.ID == c.ID {
+			other.Size = probe.TotalSize
+			return
+		}
+	}
+}
+
+// handleCaptures is the list the window shows, oldest first.
+func (s *Server) handleCaptures(w http.ResponseWriter, r *http.Request) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	out := make([]*Capture, len(s.captures))
+	copy(out, s.captures)
+	writeJSON(w, http.StatusOK, map[string]any{"captures": out})
+}
+
+// handleCaptureAccept starts the download the capture has been holding.
+//
+// Whatever the window changed on the way - a different folder, another
+// category, another connection count - is applied here, and the credentials
+// travel with it, so a file that needed the page's cookies to be allowed
+// still has them once the person has finished choosing.
+func (s *Server) handleCaptureAccept(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	s.capMu.Lock()
+	var found *Capture
+	for _, c := range s.captures {
+		if c.ID == id {
+			found = c
+			break
+		}
+	}
+	s.capMu.Unlock()
+
+	if found == nil {
+		writeErr(w, http.StatusNotFound, "that download is no longer waiting")
+		return
+	}
+
+	var over struct {
+		Filename    string `json:"filename"`
+		Category    string `json:"category"`
+		Connections int    `json:"connections"`
+		SpeedLimit  int64  `json:"speed_limit"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&over) // empty means take it as it is
+
+	req := AddRequest{
+		URL:         found.URL,
+		Filename:    found.Filename,
+		Category:    found.Category,
+		Connections: found.Connections,
+		SpeedLimit:  over.SpeedLimit,
+		Cookie:      found.Cookie,
+		Referer:     found.Referer,
+		UserAgent:   found.UserAgent,
+	}
+	if v := strings.TrimSpace(over.Filename); v != "" {
+		req.Filename = v
+	}
+	if v := strings.TrimSpace(over.Category); v != "" {
+		req.Category = v
+	}
+	if over.Connections > 0 {
+		req.Connections = over.Connections
+	}
+
+	rec := &answered{ResponseWriter: w}
+	s.add(rec, r, req)
+
+	// Let go only once a record exists. Taking it first would mean a server
+	// that could not be reached costs the address as well as the attempt,
+	// and the only way to try again would be to click the link a second time.
+	if rec.status == http.StatusCreated || rec.status == http.StatusOK {
+		s.dropCapture(id)
+	}
+}
+
+// handleCaptureIgnore puts the waiting download down without starting it.
+//
+// It succeeds whether or not anything was waiting, for the same reason the
+// clipboard's does: the window is clearing what it was showing, and turning
+// that into an error would put a complaint in the console every time someone
+// pressed Cancel.
+func (s *Server) handleCaptureIgnore(w http.ResponseWriter, r *http.Request) {
+	s.dropCapture(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) dropCapture(id string) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	kept := s.captures[:0]
+	for _, c := range s.captures {
+		if c.ID != id {
+			kept = append(kept, c)
+		}
+	}
+	s.captures = kept
 }
 
 // handleCategories is the list the window offers, in the order it shows them.

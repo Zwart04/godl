@@ -53,6 +53,11 @@ type Options struct {
 	// reading something shared with the whole desktop, and someone who does not
 	// want that said so gets to say so.
 	NoClipboard bool
+
+	// Headless says there is no window to ask. A browser capture is then
+	// started at once instead of waiting for an answer nobody is going to
+	// give, because a manager that silently drops links is worse than none.
+	Headless bool
 }
 
 // ErrAlreadyRunning reports that another manager owns this directory.
@@ -140,6 +145,9 @@ func Start(o Options) (*Instance, error) {
 	// The directory that was actually created, not the one that was asked
 	// for: they differ on a machine whose Downloads folder refuses writes.
 	srv.DownloadDir = downloadDir
+	// With no window there is nobody to put a download dialog in front of,
+	// so a capture becomes a transfer instead of waiting for an answer.
+	srv.AutoAccept = o.Headless
 	// Read once at start-up. A categories.json edited while the app is open is
 	// picked up next launch - reloading it per request would let a file being
 	// half-saved decide where a download lands.

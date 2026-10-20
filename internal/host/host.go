@@ -107,6 +107,9 @@ func handle(ctx context.Context, c *Client, req Request) Response {
 	case "add":
 		return add(ctx, c, req)
 
+	case "capture":
+		return capture(ctx, c, req)
+
 	case "list":
 		return list(ctx, c)
 
@@ -119,8 +122,35 @@ func handle(ctx context.Context, c *Client, req Request) Response {
 }
 
 func add(ctx context.Context, c *Client, req Request) Response {
+	id, err := post(ctx, c, "/api/downloads", req)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{OK: true, ID: id}
+}
+
+// capture hands the browser's download over as a question.
+//
+// The manager holds it until the person chooses, which is the whole
+// difference between a download manager that asks and one that merely
+// collects: the file gets the name and the folder they picked, or it does
+// not happen at all.
+func capture(ctx context.Context, c *Client, req Request) Response {
+	id, err := post(ctx, c, "/api/captures", req)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{OK: true, ID: id}
+}
+
+// post sends a handover to the manager.
+//
+// Both paths carry exactly the same shape - the address, the name the page
+// gave it, and the credentials the transfer will need - and differ only in
+// what they ask for: one says start, the other says ask.
+func post(ctx context.Context, c *Client, path string, req Request) (string, error) {
 	if strings.TrimSpace(req.URL) == "" {
-		return Response{Error: "the extension sent no URL"}
+		return "", errors.New("the extension sent no URL")
 	}
 
 	body := map[string]any{
@@ -133,16 +163,21 @@ func add(ctx context.Context, c *Client, req Request) Response {
 	}
 
 	var out struct {
-		OK        bool `json:"ok"`
-		Duplicate bool `json:"duplicate"`
-		Download  struct {
+		OK       bool `json:"ok"`
+		Download struct {
 			ID string `json:"id"`
 		} `json:"download"`
+		Capture struct {
+			ID string `json:"id"`
+		} `json:"capture"`
 	}
-	if err := c.roundtrip(ctx, http.MethodPost, "/api/downloads", body, &out); err != nil {
-		return Response{Error: err.Error()}
+	if err := c.roundtrip(ctx, http.MethodPost, path, body, &out); err != nil {
+		return "", err
 	}
-	return Response{OK: true, ID: out.Download.ID}
+	if out.Download.ID != "" {
+		return out.Download.ID, nil
+	}
+	return out.Capture.ID, nil
 }
 
 func list(ctx context.Context, c *Client) Response {

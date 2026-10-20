@@ -170,13 +170,20 @@ func serve(watch bool) {
 		// flipping it here keeps that one field rather than adding a second
 		// one that means the opposite.
 		NoClipboard: !watch,
+		// No window means no download dialog, so a browser capture is
+		// started rather than held for an answer that cannot come.
+		Headless: true,
 	})
 	if err != nil {
 		notify(title, "godl could not start.\n\n"+err.Error())
 		return
 	}
-	if host, e := browsersetup.HostExePath(); e == nil {
-		_ = browsersetup.Register(host)
+	// The same rule the windowed launch follows: a run redirected by
+	// GODL_HOME is a test, and the browser table belongs to the machine.
+	if os.Getenv(config.EnvHome) == "" {
+		if host, e := browsersetup.HostExePath(); e == nil {
+			_ = browsersetup.Register(host)
+		}
 	}
 
 	sig := make(chan os.Signal, 1)

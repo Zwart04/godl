@@ -103,6 +103,12 @@
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="m-title">
     <h2 id="m-title">Add download</h2>
 
+    <!-- Filled a moment after the sheet appears, when the server has finished
+         asking the remote end what the file weighs. Asking before showing the
+         sheet would make the dialog wait on a slow server, and a download
+         dialog that is slow to appear is one that looks like nothing happened. -->
+    <p class="sheet-note" id="m-size" hidden></p>
+
     <label class="field">
       <span>Address</span>
       <input id="m-url" type="url" spellcheck="false" autocomplete="off" placeholder="https://example.com/file.zip">

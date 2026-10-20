@@ -554,6 +554,62 @@ Put-Clipboard "see https://example.com/for-it" | Out-Null
 Start-Sleep -Milliseconds 3500
 Check "prose is not offered" ((Clipboard-Url) -eq "") "offered: $(Clipboard-Url)"
 
+# ── the download wizard a browser capture opens ────────────────────────────
+# A capture is a question. Before this existed the manager answered it
+# itself, and the suite would never have noticed: the file landed, the
+# checksum matched, and nobody had been asked anything.
+$capURL  = "http://127.0.0.1:$originPort/captured.bin"
+$capAdd  = Invoke-Api "/api/captures" "POST" $true ('{"url":"' + $capURL + '","filename":"captured.bin","connections":2,"cookie":"session=topsecret"}')
+Check "capture accepted" ($capAdd.code -eq 201) "got $($capAdd.code): $($capAdd.body)"
+
+$capID = ''
+try { $capID = ($capAdd.body | ConvertFrom-Json).capture.id } catch {}
+Check "capture has an id" ([bool]$capID) "no capture.id in $($capAdd.body)"
+
+$capBefore = (Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json
+Check "nothing transferred before anyone chose" (-not (@($capBefore.downloads) | Where-Object { $_.url -eq $capURL })) "the capture started on its own"
+
+$capList = (Invoke-Api "/api/captures" "GET" $true $null).body | ConvertFrom-Json
+Check "the wizard has something to show" (@($capList.captures).Count -eq 1) "got $(@($capList.captures).Count)"
+Check "the capture list keeps its secrets" (-not ($capList | ConvertTo-Json -Compress).Contains("topsecret")) "a session cookie reached the page"
+
+$capAcc  = Invoke-Api "/api/captures/$capID/accept" "POST" $true '{"filename":"renamed.bin","connections":2}'
+Check "answering starts the download" ($capAcc.code -eq 201) "got $($capAcc.code): $($capAcc.body)"
+
+$capDest = ''
+try { $capDest = ($capAcc.body | ConvertFrom-Json).download.dest } catch {}
+Check "the name chosen in the dialog is used" ($capDest.EndsWith('renamed.bin')) "dest=$capDest"
+
+$capDone = Wait-For "captured download" 30000 {
+    $d = (Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json
+    $hit = @($d.downloads) | Where-Object { $_.url -eq $capURL }
+    if ($hit -and $hit.status -eq 'done') { $true } else { $null }
+}
+Check "the answered download completes" ([bool]$capDone) "never reached done"
+
+$capAfter = (Invoke-Api "/api/captures" "GET" $true $null).body | ConvertFrom-Json
+Check "nothing left waiting after answering" (@($capAfter.captures).Count -eq 0) "got $(@($capAfter.captures).Count)"
+
+# The other answer. Clicking a link and changing one's mind must not leave a
+# dialog behind that reopens on the next tick.
+# Built by joining rather than by a literal: $originPort has to be expanded,
+# and a single-quoted string would put the dollar sign into the URL, which the
+# manager rightly refuses - the failure then surfaces several lines later as a
+# 405 from a path with an empty id, which says nothing useful at all.
+$cap2Body = '{"url":"http://127.0.0.1:' + $originPort + '/second.bin","filename":"second.bin"}'
+$cap2     = Invoke-Api "/api/captures" "POST" $true $cap2Body
+Check "a second capture accepted" ($cap2.code -eq 201) "got $($cap2.code): $($cap2.body)"
+$cap2ID   = ''
+try { $cap2ID = ($cap2.body | ConvertFrom-Json).capture.id } catch {}
+Check "the second capture has an id" ([bool]$cap2ID) "no capture.id in $($cap2.body)"
+
+$ignCap  = Invoke-Api "/api/captures/$cap2ID/ignore" "POST" $true $null
+Check "not now puts it down" ($ignCap.code -eq 200) "got $($ignCap.code): $($ignCap.body)"
+$capGone = (Invoke-Api "/api/captures" "GET" $true $null).body | ConvertFrom-Json
+Check "and nothing left waiting" (@($capGone.captures).Count -eq 0) "still waiting"
+$capGoneDl = (Invoke-Api "/api/downloads" "GET" $true $null).body | ConvertFrom-Json
+Check "and nothing was started by it" (-not (@($capGoneDl.downloads) | Where-Object { $_.url -like '*second.bin' })) "a put-down capture still transferred"
+
 # ── screenshot with a real row on screen ───────────────────────────────────
 try {
     Add-Type -AssemblyName System.Windows.Forms, System.Drawing

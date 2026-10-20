@@ -122,6 +122,9 @@ implementation is not.
 - Extension for Chrome, Brave, Edge and Firefox
 - Catches downloads and hands them to godl with the page's cookies, referer
   and user agent, so a server that said yes to the browser says yes to godl
+- **Opens the download dialog first**, with the name, the folder, the size and
+  the connection count, and waits for you — *Start*, change anything, or *not
+  now*. A single switch in the extension's options turns the asking off
 - Gives the download straight back to the browser if godl is unavailable —
   nothing is ever lost by trying
 
@@ -249,8 +252,15 @@ it.) These two commands are only for repairing it by hand:
 - **Firefox** — open `about:debugging#/runtime/this-firefox`, choose
   *Load Temporary Add-on…*, and pick `browser-extension/firefox/manifest.json`.
 
-**3. Use it.** Click any download link. godl captures it, and if the app was
-not open it is launched for you.
+**3. Use it.** Click any download link. godl captures it, brings its window to
+the front and asks what to do with it: the name, the folder, the size, the
+connection count, and a *Download* button. Change any of it, press *not now*,
+or leave it and the transfer begins where you said. If the app was not open,
+it is launched for you.
+
+The asking is a switch in the extension's options — *Ask before each download*.
+Turned off, transfers start the moment a link is clicked, the way a browser
+does it, only across eight connections instead of one.
 
 Right-click → *Download with godl* is available as a manual route whenever
 automatic capture is switched off in the extension's options. The options page
@@ -311,6 +321,10 @@ A bearer token is created on first run and stored at
 | `GET` | `/api/clipboard` | The copied link waiting for an answer, if any |
 | `POST` | `/api/clipboard/accept` | Download the waiting link, through the ordinary add path |
 | `POST` | `/api/clipboard/ignore` | Put the waiting link down |
+| `GET` | `/api/captures` | The downloads the browser handed over and nobody has answered, oldest first |
+| `POST` | `/api/captures` | Hand one over without starting it — the browser's route |
+| `POST` | `/api/captures/{id}/accept` | Start it, applying whatever the dialog changed |
+| `POST` | `/api/captures/{id}/ignore` | Put it down without downloading |
 | `POST` | `/api/downloads` | Add a download |
 | `POST` | `/api/downloads/{id}/pause` | Pause |
 | `POST` | `/api/downloads/{id}/resume` | Resume |
@@ -529,6 +543,8 @@ godl/
   the file and the folder when a transfer ends
 - [x] A run redirected by `GODL_HOME` cannot touch the machine's browser
   registration
+- [x] The download dialog a browser capture opens — name, folder, size and
+  connection count before anything starts, with a switch to stop asking
 
 ## License
 

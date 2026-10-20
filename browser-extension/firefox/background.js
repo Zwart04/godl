@@ -41,6 +41,10 @@ const DEFAULTS = {
   // Hand every download in the browser to godl. Turning this off leaves the
   // right-click command as the only route, which is the quieter way to use it.
   intercept: true,
+  // Ask before each one, showing the name, the folder and the size and
+  // waiting for a button. Off, transfers start the moment the link is
+  // clicked - which is what a browser does anyway, only faster.
+  askBefore: true,
   // Comma, space or newline separated. Empty means every file type.
   extensions: '',
   // How many connections godl opens per file. 1 behaves like a plain browser.
@@ -172,7 +176,10 @@ async function handToGodl(item, config) {
   const filename = baseName(item.filename) || baseName(url);
 
   return ask({
-    cmd: 'add',
+    // "capture" holds the download for the person to answer; "add" starts it
+    // at once. Both carry the same address, name and credentials - only the
+    // question differs.
+    cmd: config.askBefore ? 'capture' : 'add',
     url,
     filename,
     referer: item.referrer || '',
@@ -295,12 +302,14 @@ api.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // A link clicked by hand is offered to godl without cancelling anything,
-// because there is nothing of the download to cancel yet.
+// because there is nothing of the download to cancel yet. It asks the same
+// way an automatic capture does: choosing a folder by hand and being handed
+// one anyway is the exact surprise this setting exists to avoid.
 async function downloadLinkNow(url, pageUrl) {
   if (schemeOf(url) !== 'http:' && schemeOf(url) !== 'https:') return;
   const config = await api.storage.sync.get(DEFAULTS);
   const reply = await ask({
-    cmd: 'add',
+    cmd: config.askBefore ? 'capture' : 'add',
     url,
     filename: baseName(url),
     referer: pageUrl,

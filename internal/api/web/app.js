@@ -43,6 +43,7 @@ const ui = {
   mLimit: $('m-limit'),
   mLimitCustom: $('m-limit-custom'),
   mErr: $('m-error'),
+  mSize: $('m-size'),
   mCancel: $('m-cancel'),
   mOk: $('m-ok'),
   limitModal: $('limit'),
@@ -492,6 +493,8 @@ function openModal() {
   ui.modal.hidden = false;
   ui.mErr.hidden = true;
   ui.mErr.textContent = '';
+  ui.mSize.hidden = true;
+  ui.mSize.textContent = '';
   ui.url.value = '';
   ui.name.value = '';
   ui.mCat.value = '';
@@ -501,6 +504,15 @@ function openModal() {
 
 function closeModal() {
   ui.modal.hidden = true;
+
+  // Closing while answering a browser capture is a real answer, and it is
+  // handed back so the next poll does not put the same download straight in
+  // front of them again.
+  if (captureID) {
+    const id = captureID;
+    captureID = '';
+    api(`/api/captures/${id}/ignore`, { method: 'POST' }).catch(() => {});
+  }
 }
 
 function sheetError(message) {
@@ -524,9 +536,14 @@ async function submitAdd() {
   }
 
   ui.mOk.disabled = true;
-  ui.mOk.textContent = 'Adding…';
+  ui.mOk.textContent = captureID ? 'Starting…' : 'Adding…';
   try {
-    const res = await api('/api/downloads', {
+    // Answering a browser capture starts the one the manager is holding, with
+    // whatever was changed on the way - another folder, another category,
+    // another connection count, another address. Adding by hand posts to the
+    // list instead, and the two share every check below this point.
+    const target = captureID ? `/api/captures/${captureID}/accept` : '/api/downloads';
+    const res = await api(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -540,6 +557,9 @@ async function submitAdd() {
         category: ui.mCat.value,
       }),
     });
+    // Cleared before the sheet is put down, so closing it does not answer
+    // "not now" to a download that has already started.
+    captureID = '';
     closeModal();
     const dest = res.download && res.download.dest;
     toast(res.duplicate ? 'That address is already in the list.' : 'Added ' + baseName(dest), false);
@@ -845,6 +865,85 @@ function wireLimitSelect(sel, custom) {
   });
 }
 
+/* ── browser capture sheet ──────────────────────────────────────────────── */
+
+/* The download the browser handed over and nobody has answered yet. It opens
+ * in the Add sheet: that sheet already asks for the name, the folder, the
+ * category and the connection count, which is the whole of what a download
+ * dialog is for. Answering one means the Download button calls accept rather
+ * than add - see submitAdd. */
+let captureID = '';
+
+/* Brings the window forward. A dialog that opens behind the browser is the
+ * same as no dialog at all, which is exactly how this looked before the
+ * wizard existed: the browser had already erased its own row, and nothing on
+ * screen said a transfer had begun. */
+function claimAttention() {
+  const rt = window.runtime;
+  if (!rt) return;
+  try {
+    if (rt.WindowUnminimise) rt.WindowUnminimise();
+    if (rt.WindowShow) rt.WindowShow();
+    if (rt.WindowSetForeground) rt.WindowSetForeground();
+  } catch (_) {
+    /* the sheet still opens; it is simply somewhere behind everything */
+  }
+}
+
+/* The size line. It fills in once the server has asked the remote end, which
+ * happens after the sheet is already up - so a slow server costs this line
+ * and never the dialog itself. */
+function showCaptureSize(c) {
+  if (!c || !(c.size > 0)) return;
+  ui.mSize.textContent = size(c.size);
+  ui.mSize.hidden = false;
+}
+
+function openCapture(c) {
+  captureID = c.id;
+  openModal();
+  ui.url.value = c.url || '';
+  ui.name.value = c.filename || '';
+  if (c.category) ui.mCat.value = c.category;
+  if (c.connections > 0) ui.seg.value = String(c.connections);
+  showCaptureSize(c);
+}
+
+/* Asked on its own rhythm, like the captured link's. A browser capture is a
+ * human-speed event, and it is only ever opened when nothing else is being
+ * asked of the window: a dialog appearing over a dialog is how someone
+ * presses the wrong button. */
+async function pollCaptures() {
+  let res;
+  try {
+    res = await api('/api/captures');
+  } catch (_) {
+    // refresh() already reports connectivity once per break; this must not
+    // add a second complaint about the same thing.
+    return;
+  }
+  const list = res && Array.isArray(res.captures) ? res.captures : [];
+
+  if (captureID) {
+    const open = list.find((c) => c.id === captureID);
+    if (!open) {
+      // Answered elsewhere, or given up on: put the sheet down rather than
+      // leave it asking about a download that no longer exists.
+      captureID = '';
+      if (!ui.modal.hidden) closeModal();
+      return;
+    }
+    showCaptureSize(open);
+    return;
+  }
+
+  if (anySheetOpen() || !list.length) return;
+  // Oldest first. Someone who clicked three links meant all three, and the
+  // one they clicked first is the one they expect to be asked about.
+  openCapture(list[0]);
+  claimAttention();
+}
+
 /* ── wiring ────────────────────────────────────────────────────────────── */
 
 ui.rows.addEventListener('click', (e) => {
@@ -1007,3 +1106,4 @@ async function bootstrap() {
 bootstrap();
 setInterval(refresh, 700);
 setInterval(pollClipboard, 1000);
+setInterval(pollCaptures, 600);

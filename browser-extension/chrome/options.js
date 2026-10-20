@@ -5,9 +5,10 @@
 // the rest of this file be identical in both browsers.
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
-const DEFAULTS = { intercept: true, extensions: '', connections: 8 };
+const DEFAULTS = { intercept: true, askBefore: true, extensions: '', connections: 8 };
 
 const interceptBox = document.getElementById('intercept');
+const askBox = document.getElementById('askBefore');
 const extensionsBox = document.getElementById('extensions');
 const connectionsBox = document.getElementById('connections');
 const testButton = document.getElementById('test');
@@ -19,6 +20,7 @@ let saveTimer = null;
 async function load() {
   const config = await api.storage.sync.get(DEFAULTS);
   interceptBox.checked = config.intercept !== false;
+  askBox.checked = config.askBefore !== false;
   extensionsBox.value = config.extensions || '';
   connectionsBox.value = String(config.connections || DEFAULTS.connections);
   await ping();
@@ -32,6 +34,7 @@ function save() {
   saveTimer = setTimeout(async () => {
     await api.storage.sync.set({
       intercept: interceptBox.checked,
+      askBefore: askBox.checked,
       extensions: extensionsBox.value.trim(),
       connections: Number(connectionsBox.value),
     });
@@ -72,7 +75,7 @@ async function ping() {
   errorLine.hidden = false;
 }
 
-for (const el of [interceptBox, extensionsBox, connectionsBox]) {
+for (const el of [interceptBox, askBox, extensionsBox, connectionsBox]) {
   el.addEventListener('change', save);
   if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', save);
 }
