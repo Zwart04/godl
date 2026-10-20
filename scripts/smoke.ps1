@@ -5,8 +5,9 @@
 #   1. the manager comes up and answers on the endpoint the browser host reads
 #   2. the page is served with the token baked in, and is refused without it
 #   3. a download actually transfers, lands whole, and leaves no .part behind,
-#      filed by extension - and a link copied to the clipboard is only ever
-#      offered, never fetched on its own
+#      filed by extension - a link copied to the clipboard is only ever
+#      offered, never fetched on its own - and the transfer's own window
+#      opens with its numbers in it, closes when asked, and reopens on request
 #   4. a second launch is refused, and closing the window returns the lock
 #
 # Nothing here is skipped on failure: every step reports and the script ends
@@ -179,7 +180,7 @@ http.createServer((req, res) => {
   // server would be right to refuse, having nothing left to hold. Slowing that
   // one keeps the question honest: what has a download waiting for an hour
   // transferred?
-  const pause = req.url.indexOf('slow') !== -1 ? 60 : 4;
+  const pause = req.url.indexOf('hold') !== -1 ? 300 : (req.url.indexOf('slow') !== -1 ? 60 : 4);
   const rs = fs.createReadStream(file, {start: start, end: end});
   rs.on('data', (c) => { if (!rs.destroyed) rs.pause(); setTimeout(() => rs.resume(), pause); });
   rs.pipe(res);
@@ -267,7 +268,7 @@ $css = Invoke-WebRequest "$ep/app.css" -UseBasicParsing -TimeoutSec 10
 Check "stylesheet serves" ($css.StatusCode -eq 200) "got $($css.StatusCode)"
 
 # ── 3. a real download through the running exe ─────────────────────────────
-$url = "http://127.0.0.1:$originPort/payload.bin"
+$url = "http://127.0.0.1:$originPort/payload.bin?hold=1"
 $add = Invoke-Api "/api/downloads" "POST" $true ('{"url":"' + $url + '","connections":8}')
 Check "add accepted" ($add.code -eq 201) "got $($add.code): $($add.body)"
 
@@ -279,6 +280,150 @@ Check "download has an id" ([bool]$capId) "no id in list: $($listed.body)"
 $none = Invoke-Api "/api/downloads" "GET" $true $null
 $noneFirst = (($none.body | ConvertFrom-Json).downloads[0]).speed_limit
 Check "new download starts uncapped" ($noneFirst -eq 0) "speed_limit=$noneFirst, expected 0"
+
+# A 32 MB file over loopback lands in well under a second, and a transfer's
+# window closes itself the moment the transfer ends - so the window checks
+# below would be racing the download rather than examining the dialog. A low
+# ceiling keeps the transfer alive for the length of those checks; it is lifted
+# again as soon as they are done.
+$held = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":32768}'
+Check "transfer held open for the window checks" ($held.code -eq 200) "got $($held.code): $($held.body)"
+
+# ── 3f. the transfer's own window ───────────────────────────────────────────
+# A running download opens a window of its own - the IDM-style sheet with the
+# URL, the rate, the time left and what each connection is carrying. It is
+# found here by class rather than by title because the title is under test: a
+# window whose caption leads with no percentage is not reporting anything.
+#
+# This sits immediately after the download starts on purpose. The window is a
+# report on a transfer in flight and closes itself when the transfer ends, so
+# checking it after a run of API calls would be racing the download rather than
+# testing the dialog.
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class GodlStatusWin {
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")]
+    public static extern bool EnumThreadWindows(uint threadId, EnumProc cb, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string windowName);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr h);
+    // FindWindow is deliberately not used: PowerShell marshals a null title as
+    // an empty string, and FindWindow then matches only an empty caption - so
+    // it finds the taskbar and never the dialog. Enumeration by class name has
+    // no such trap.
+    public static IntPtr FindByClass(string cls) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            StringBuilder sb = new StringBuilder(256);
+            GetClassName(h, sb, sb.Capacity);
+        if (sb.ToString() == cls && IsWindowVisible(h)) { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static IntPtr FindByClassForProcess(string cls, int processId, bool visibleOnly) {
+        // Tray host uses HWND_MESSAGE and therefore is absent from EnumWindows.
+        if (cls == "GodlTrayWindow") {
+            IntPtr messageParent = new IntPtr(-3);
+            IntPtr messageWindow = FindWindowEx(messageParent, IntPtr.Zero, cls, null);
+            if (messageWindow != IntPtr.Zero) {
+                uint pid; GetWindowThreadProcessId(messageWindow, out pid);
+                if (pid == (uint)processId) return messageWindow;
+        }
+        }
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pid != (uint)processId) return true;
+            StringBuilder sb = new StringBuilder(256);
+            GetClassName(h, sb, sb.Capacity);
+            if (sb.ToString() == cls && (!visibleOnly || IsWindowVisible(h))) { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static IntPtr FindVisibleForProcess(int processId) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pid == (uint)processId && IsWindowVisible(h)) { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+}
+"@ -ErrorAction SilentlyContinue
+
+function Get-StatusWindow {
+    $h = [GodlStatusWin]::FindByClass("GodlStatusWindow")
+    if ($h -eq [IntPtr]::Zero) { return $null }
+    $sb = New-Object System.Text.StringBuilder 512
+    [void][GodlStatusWin]::GetWindowText($h, $sb, $sb.Capacity)
+    return @{ h = $h; title = $sb.ToString() }
+}
+
+$sw = Wait-For "transfer window" 10000 { Get-StatusWindow }
+Check "a running transfer opens its own window" ([bool]$sw) "no GodlStatusWindow within 10s of the transfer starting"
+Check "its title leads with the percent" ($sw -and $sw.title -match '^\d+(\.\d+)?% godl') "title was '$($sw.title)'"
+
+# The connection table exists only if the engine reports per-segment state, so
+# the list is where that claim is checked end to end: the dialog draws from
+# the very numbers this row has to carry.
+$seg = Invoke-Api "/api/downloads" "GET" $true $null
+$segRow = (($seg.body | ConvertFrom-Json).downloads | Where-Object { $_.id -eq $capId })[0]
+$segCount = @($segRow.progress.segments).Count
+Check "the list carries per-connection state" ($segCount -gt 0) "progress.segments absent or empty for a segmented transfer"
+
+# Closing that window is a desktop act, not a queue action. The transfer keeps
+# running, and asking for it again the way a double-click in the list does
+# brings the window straight back - which is the whole reason the reopen
+# endpoint exists.
+#
+# A missing window is reported, not fatal: the rest of the suite still has to
+# run, and a suite that dies here hides every result after it.
+$closedWin = $null
+if ($sw) {
+    $null = [GodlStatusWin]::PostMessage($sw.h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+    $closedWin = Wait-For "transfer window close" 5000 { if ([GodlStatusWin]::IsWindow($sw.h)) { $null } else { $true } }
+}
+Check "the window closes when asked" ([bool]$closedWin) "GodlStatusWindow still open after WM_CLOSE (or never opened)"
+
+$afterClose = Invoke-Api "/api/downloads" "GET" $true $null
+$still = (($afterClose.body | ConvertFrom-Json).downloads | Where-Object { $_.id -eq $capId })[0].status
+Check "closing it did not stop the transfer" ($still -eq 'running' -or $still -eq 'done') "status was '$still'"
+
+$re = Invoke-Api ("/api/downloads/" + $capId + "/status") "POST" $true $null
+Check "asking again reaches the window" ($re.code -eq 200) "got $($re.code): $($re.body)"
+$back = Wait-For "transfer window reopen" 5000 { Get-StatusWindow }
+Check "the window comes back" ([bool]$back) "no GodlStatusWindow after POST /status"
+
+$noSuch = Invoke-Api "/api/downloads/nope/status" "POST" $true $null
+Check "unknown id gets no window" ($noSuch.code -eq 404) "got $($noSuch.code)"
+
+# The window is a report on a transfer that is still running: the checks below
+# drive the same transfer, so they must not find it finished already.
+Check "the transfer is still running for the limit checks" ($still -eq 'running') "status was '$still'"
+
+# The ceiling was only there to keep the dialog on screen; the transfer has a
+# suite to finish.
+$lifted = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":0}'
+Check "ceiling lifted after the window checks" ($lifted.code -eq 200) "got $($lifted.code): $($lifted.body)"
 
 # The transfer is running right now, which is the case the control exists for.
 $cap = Invoke-Api ("/api/downloads/" + $capId + "/speed-limit") "POST" $true '{"speed_limit":1048576}'
@@ -667,10 +812,42 @@ Check "first instance unaffected" ($firstStillHealthy -eq 200) "got $firstStillH
 if ($secondAlive) { Stop-Process -Id $second.Id -Force -ErrorAction SilentlyContinue }
 
 # ── 5. closing the window cleans up ────────────────────────────────────────
+# Every transfer by now has finished, and a transfer window whose job is over
+# leaves the screen on its own - nobody closes it, the manager does. One left
+# standing would be a window with no one inside to answer its buttons.
+$leftover = Wait-For "transfer windows to go" 20000 { if (Get-StatusWindow) { $null } else { $true } }
+Check "no transfer window outlives its transfer" ([bool]$leftover) "a GodlStatusWindow is still on screen after everything finished"
+
 $guiProc.Refresh()
+$mainHandle = $guiProc.MainWindowHandle
 $guiProc.CloseMainWindow() | Out-Null
-$exited = Wait-For "gui exit" 30000 { $guiProc.Refresh(); if ($guiProc.HasExited) { $true } else { $null } }
-Check "window closed on request" ([bool]$exited) "still running after WM_CLOSE (OnBeforeClose may have blocked)"
+$trayHandle = Wait-For "tray icon window" 10000 {
+    $h = [GodlStatusWin]::FindByClassForProcess("GodlTrayWindow", $guiProc.Id, $false)
+    if ($h -ne [IntPtr]::Zero) { $h } else { $null }
+}
+$hidden = $null
+if ($trayHandle) {
+    $hidden = Wait-For "main window hidden to tray" 10000 {
+        if ($mainHandle -ne [IntPtr]::Zero -and -not [GodlStatusWin]::IsWindowVisible($mainHandle)) { $true } else { $null }
+    }
+}
+$guiProc.Refresh()
+Check "tray icon registered" ([bool]$trayHandle) "no GodlTrayWindow for manager process"
+Check "closing main window keeps manager alive in tray" ($trayHandle -and $hidden -and -not $guiProc.HasExited) "tray=$trayHandle hidden=$hidden main=$mainHandle visible=$([GodlStatusWin]::IsWindowVisible($mainHandle)) exited=$($guiProc.HasExited)"
+
+if ($trayHandle -and $hidden) { [void][GodlStatusWin]::PostMessage($trayHandle, 0x8003, [IntPtr]::Zero, [IntPtr]::Zero) }
+$reopened = Wait-For "tray Open restores main window" 10000 {
+    if ($mainHandle -ne [IntPtr]::Zero -and [GodlStatusWin]::IsWindowVisible($mainHandle)) { $mainHandle } else { $null }
+}
+Check "tray Open restores main window" ([bool]$reopened) "main window did not return"
+
+# Closing to tray is not a quit; send the tray Exit action after reopen is proved.
+$guiProc.Refresh()
+Check "tray manager process remains alive" (-not $guiProc.HasExited) "process exited when main window closed"
+
+if ($trayHandle) { [void][GodlStatusWin]::PostMessage($trayHandle, 0x8002, [IntPtr]::Zero, [IntPtr]::Zero) }
+$exited = Wait-For "tray exit" 30000 { $guiProc.Refresh(); if ($guiProc.HasExited) { $true } else { $null } }
+Check "tray Exit shuts manager down" ([bool]$exited) "still running after Exit command"
 
 Check "endpoint removed on shutdown" (-not (Test-Path $endpointFile)) "api-endpoint still present"
 Check "lock released on shutdown" (-not (Test-Path $lockFile)) "manager.lock still present"

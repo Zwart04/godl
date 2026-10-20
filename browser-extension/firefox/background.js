@@ -198,6 +198,20 @@ function report(err) {
   console.warn('[godl]', err && err.message ? err.message : err);
 }
 
+async function notifyHandoff(title, message) {
+  try {
+    await api.notifications.create('', {
+      type: 'basic',
+      iconUrl: 'icons/128.png',
+      title,
+      message,
+      priority: 1,
+    });
+  } catch (e) {
+    report(e);
+  }
+}
+
 api.downloads.onCreated.addListener((item) => {
   handleNewDownload(item).catch(report);
 });
@@ -251,6 +265,11 @@ async function handleNewDownload(item) {
     );
     return;
   }
+
+  await notifyHandoff(
+    'Download sent to godl',
+    filename || 'Browser download handed off successfully.'
+  );
 
   // Only now is the browser's row removed. Erasing before a successful handover
   // is how a failed download disappears from everywhere at once.
@@ -320,6 +339,10 @@ async function downloadLinkNow(url, pageUrl) {
 
   if (!reply || !reply.ok) {
     report(new Error((reply && reply.error) || 'godl did not take the link.'));
+    await notifyHandoff('godl could not take download',
+      (reply && reply.error) || 'Browser download remains available in the browser.');
+  } else {
+    await notifyHandoff('Download sent to godl', baseName(url) || 'Link handed off successfully.');
   }
 }
 

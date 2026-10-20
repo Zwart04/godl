@@ -957,6 +957,21 @@ ui.rows.addEventListener('click', (e) => {
   if (chip && !chip.disabled) openCategory();
 });
 
+// Double-clicking a row is asking what this one is doing. The answer is the
+// transfer's own window - the URL, the rate, the time left, and what each
+// connection is carrying - which no list can show for one row without
+// showing it for none of the others.
+ui.rows.addEventListener('dblclick', async (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  select(row.dataset.id);
+  try {
+    await api('/api/downloads/' + enc(row.dataset.id) + '/status', { method: 'POST' });
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
 ui.add.addEventListener('click', openModal);
 ui.mCancel.addEventListener('click', closeModal);
 ui.modal.addEventListener('click', (e) => { if (e.target === ui.modal) closeModal(); });

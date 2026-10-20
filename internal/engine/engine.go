@@ -317,6 +317,11 @@ func ensurePartFile(d *state.Download) error {
 }
 
 func (r *Runner) runSegments(ctx context.Context, client *http.Client, d *state.Download, f *os.File, lim *limiter, prog *Progress, n int) error {
+	// The plan is handed over before anything else, including the early return
+	// for a transfer whose segments are all complete: the dialog's table is
+	// drawn from this, and a finished plan still has rows worth showing.
+	prog.Attach(d.Segments)
+
 	pending := make([]*state.Segment, 0, len(d.Segments))
 	for i := range d.Segments {
 		if !d.Segments[i].Done {
@@ -371,6 +376,7 @@ func (r *Runner) fetchSegment(ctx context.Context, client *http.Client, d *state
 	byteStart := reqStart + seg.Written
 	if byteStart > seg.End {
 		seg.Done = true
+		prog.SegDone(seg.Index)
 		return nil
 	}
 
@@ -387,6 +393,12 @@ func (r *Runner) fetchSegment(ctx context.Context, client *http.Client, d *state
 			req.Header.Set("If-Range", d.LastModified)
 		}
 	}
+
+	// Recorded before the request goes out, not when the first byte arrives:
+	// waiting on the server is part of what a connection is doing, and a table
+	// that called a waiting connection idle would be lying about the only
+	// moment when anything is being asked of the remote end.
+	prog.SegGet(seg.Index)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -431,9 +443,13 @@ func (r *Runner) fetchSegment(ctx context.Context, client *http.Client, d *state
 					return ew
 				}
 				seg.Written += int64(nw)
-				prog.Add(int64(nw))
+				// One accounting call, not two: the row and the total are
+				// both advanced inside SegAdd, so the bar and the table this
+				// dialog draws cannot drift apart about the same file.
+				prog.SegAdd(seg.Index, int64(nw))
 				if seg.Written >= seg.Len() {
 					seg.Done = true
+					prog.SegDone(seg.Index)
 					return nil
 				}
 			}
@@ -445,6 +461,7 @@ func (r *Runner) fetchSegment(ctx context.Context, client *http.Client, d *state
 					return fmt.Errorf("segment %d truncated: %d of %d bytes", seg.Index, seg.Written, seg.Len())
 				}
 				seg.Done = true
+				prog.SegDone(seg.Index)
 				return nil
 			}
 			return er

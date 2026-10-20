@@ -23,12 +23,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"time"
 
 	"godl/internal/app"
 	"godl/internal/browsersetup"
 	"godl/internal/config"
 	"godl/internal/state"
+	"godl/internal/tray"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -121,12 +123,21 @@ func runWindow(noClipboard bool) {
 		}
 	}
 
+	trayIcon := tray.New()
+	if !trayIcon.IconAdded() {
+		trayIcon.Close()
+		inst.Shutdown(15 * time.Second)
+		notify(title, "godl could not add its system tray icon. Check Windows notification-area settings, then restart godl.")
+		return
+	}
+	var quitting atomic.Bool
 	runErr := wails.Run(&options.App{
-		Title:     title,
-		Width:     1080,
-		Height:    680,
-		MinWidth:  minWidth,
-		MinHeight: minHeight,
+		Title:             title,
+		Width:             1080,
+		Height:            680,
+		MinWidth:          minWidth,
+		MinHeight:         minHeight,
+		HideWindowOnClose: true,
 
 		// The page itself comes from the manager's own handler, not from an
 		// embedded copy. One interface, one token, one place to fix bugs -
@@ -138,13 +149,29 @@ func runWindow(noClipboard bool) {
 		BackgroundColour: &options.RGBA{R: 245, G: 245, B: 247, A: 1},
 
 		OnBeforeClose: func(ctx context.Context) bool {
-			// Returning true cancels the close, so a "no" keeps the window.
-			return !confirmQuit(ctx, inst)
+			return !quitting.Load() // Only tray Exit may close the manager.
+		},
+		OnStartup: func(ctx context.Context) {
+			go func() {
+				for action := range trayIcon.Events() {
+					switch action {
+					case tray.Open:
+						runtime.WindowShow(ctx)
+					case tray.Exit:
+						if confirmQuit(ctx, inst) {
+							quitting.Store(true)
+							runtime.Quit(ctx)
+						}
+					}
+				}
+			}()
 		},
 		OnShutdown: func(context.Context) {
 			_ = inst.Shutdown(15 * time.Second)
+			trayIcon.Close()
 		},
 	})
+	trayIcon.Close()
 
 	// Wails only reaches OnShutdown after a clean exit. A window that failed
 	// to open would otherwise leave the single-instance lock and the endpoint

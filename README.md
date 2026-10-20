@@ -57,8 +57,9 @@ implementation is not.
 **Reliability**
 - One manager per machine. A single-instance lock prevents two schedulers
   from writing the same `.part` file, which is how downloads get corrupted
-- Closing the window while transfers are running asks first, then leaves them
-  **paused with their progress intact** rather than failed
+- Closing the window puts godl in the notification area and keeps downloading.
+  **Exit** from the tray icon asks first when transfers are running, then leaves
+  them **paused with their progress intact** rather than failed
 - Resume continues from the progress already on disk, not from zero, and the
   engine refuses a resume the server will not honour rather than silently
   restarting
@@ -112,8 +113,20 @@ implementation is not.
 **Interface**
 - A native desktop window, not a browser tab: its own process, its own taskbar
   entry, its own line in Task Manager
+- **A system tray icon that stays.** Closing the window hides it; double-click
+  the icon or choose **Open godl** to bring it back, and **Exit** to stop the
+  manager. godl keeps running and downloading while hidden
 - IDM-style columnar list — name, category, size, status, speed, time left,
   connections
+- **A transfer window of its own, per download.** It opens when a transfer
+  starts with the address, the file size, what has arrived, the rate, the time
+  left and whether it can resume; a progress bar underneath, and below that the
+  map of which connection owns which part of the file with a row per connection
+  saying whether it is receiving, waiting or done. Pause, Cancel and *Hide
+  details* (which collapses the map and the table, and grows back to exactly
+  the height it had), plus tabs for what happens when the transfer finishes and
+  for a speed limit. It closes itself when the download does, and double-clicking
+  a row brings it back
 - Sortable columns, in-place row updates, keyboard shortcuts
 - Apple-inspired visual design: hairline rules, one accent colour, no chrome
   that is not doing work
@@ -127,6 +140,8 @@ implementation is not.
   now*. A single switch in the extension's options turns the asking off
 - Gives the download straight back to the browser if godl is unavailable —
   nothing is ever lost by trying
+- A desktop notification confirms a successful handoff, and says so when godl
+  cannot take the link and the browser keeps the download
 
 **After a download**
 - Files land in your own `Downloads\godl` folder, sorted into category folders
@@ -248,7 +263,9 @@ it.) These two commands are only for repairing it by hand:
 
 - **Chrome / Edge / Brave** — open `chrome://extensions` (Brave:
   `brave://extensions`), turn on *Developer mode*, choose *Load unpacked*, and
-  pick `browser-extension/chrome`.
+  pick `browser-extension/chrome`. Extension shows desktop notification after
+  successful handoff to godl; install updated extension permissions and restart
+  Brave before testing notifications.
 - **Firefox** — open `about:debugging#/runtime/this-firefox`, choose
   *Load Temporary Add-on…*, and pick `browser-extension/firefox/manifest.json`.
 
@@ -336,6 +353,7 @@ A bearer token is created on first run and stored at
 | `POST` | `/api/downloads/{id}/move-down` | Move behind the download below it |
 | `POST` | `/api/downloads/{id}/category` | Put it in another category, moving its file |
 | `POST` | `/api/downloads/{id}/reveal` | Show in Explorer |
+| `POST` | `/api/downloads/{id}/status` | Open this download's transfer window (`204` when there is no window to show) |
 | `DELETE` | `/api/downloads/{id}` | Remove the record |
 
 ```jsonc
@@ -545,6 +563,10 @@ godl/
   registration
 - [x] The download dialog a browser capture opens — name, folder, size and
   connection count before anything starts, with a switch to stop asking
+- [x] The transfer window — a native, per-download window showing URL, size,
+  received, rate, time left and resume, with the progress bar, the map of which
+  connection owns which part of the file, the per-connection table, and
+  pause/cancel/hide details that collapse it back to its exact height
 
 ## License
 

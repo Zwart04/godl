@@ -86,6 +86,15 @@ type Server struct {
 	// manager at all.
 	AutoAccept bool
 
+	// OpenStatus shows a transfer's own dialog - the window with its URL,
+	// rate, time left and connection list in it. It is a callback rather
+	// than something this package owns because the dialog is a desktop
+	// window on a thread of its own, and the API is the one part of godl
+	// that has no business owning windows. Nil means no dialog: a headless
+	// manager answers 204 instead of failing a request that was only ever
+	// asking to be shown something.
+	OpenStatus func(id string)
+
 	// capMu guards captures, for the same reason clipMu is separate from mu:
 	// the browser's handover arrives on its own goroutine while a request
 	// may be answering a different one.
@@ -169,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		return reveal(d.Dest)
 	})))
+	mux.Handle("POST /api/downloads/{id}/status", s.authed(http.HandlerFunc(s.handleOpenStatus)))
 	mux.Handle("POST /api/downloads/{id}/speed-limit", s.authed(http.HandlerFunc(s.handleSpeedLimit)))
 	mux.Handle("POST /api/downloads/{id}/schedule", s.authed(http.HandlerFunc(s.handleSchedule)))
 	mux.Handle("POST /api/downloads/{id}/category", s.authed(http.HandlerFunc(s.handleCategory)))
@@ -497,6 +507,31 @@ func (s *Server) handleSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	next, _ := s.find(id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
+}
+
+// handleOpenStatus puts a transfer's own dialog on the screen.
+//
+// It is the one endpoint whose entire effect is a window. Double-clicking a
+// row in the list is somebody asking "what is this one doing?", and the
+// answer is a window rather than a longer row - the URL, the rate, the time
+// left and what each connection is carrying, which no list can hold for one
+// download without holding it for none of the others.
+//
+// The record is checked first, so a stale tab cannot ask for a dialog about
+// nothing; and an app with no window to show answers 204 instead of failing,
+// because the request was honest and there is simply nobody home to open it.
+func (s *Server) handleOpenStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.find(id); !ok {
+		writeErr(w, http.StatusNotFound, "no such download")
+		return
+	}
+	if s.OpenStatus == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.OpenStatus(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleSchedule sets when a download may first begin.

@@ -32,6 +32,7 @@ import (
 	"godl/internal/engine"
 	"godl/internal/notify"
 	"godl/internal/queue"
+	"godl/internal/status"
 )
 
 // Options selects how the manager behaves.
@@ -83,6 +84,12 @@ type Instance struct {
 	// for as long as the process happened to be alive after everything else had
 	// already been told to go.
 	watch *clipboard.Monitor
+
+	// dialogs are the transfer windows, one per download while it runs. They
+	// own their own thread and are closed on the way out, because a dialog
+	// left on the desktop after the manager has gone is a window with nobody
+	// inside to answer its buttons.
+	dialogs *status.Manager
 
 	mu      sync.Mutex
 	stopped bool
@@ -148,6 +155,12 @@ func Start(o Options) (*Instance, error) {
 	// With no window there is nobody to put a download dialog in front of,
 	// so a capture becomes a transfer instead of waiting for an answer.
 	srv.AutoAccept = o.Headless
+	// The transfer dialog, and the API's way of asking for one. It reads the
+	// queue itself, so this is the whole of the connection: the window opens
+	// when a transfer starts, and a double-click in the list asks for the
+	// window it would have opened anyway.
+	dialogs := status.New(q)
+	srv.OpenStatus = dialogs.Open
 	// Read once at start-up. A categories.json edited while the app is open is
 	// picked up next launch - reloading it per request would let a file being
 	// half-saved decide where a download lands.
@@ -173,18 +186,26 @@ func Start(o Options) (*Instance, error) {
 	// last byte lands the browser has already erased its own row - so a
 	// transfer that took thirty seconds and eight connections otherwise
 	// looks, from the chair in front of it, exactly like nothing happened.
+	// The same stream also opens each transfer's own dialog, which is the
+	// other half of that: the notification says a download is over, and the
+	// dialog is what says it is happening while it happens.
 	// The channel never blocks a worker, and it closes when the queue does.
 	go func() {
 		for ev := range q.Events() {
-			if ev.Kind != "finished" || ev.Dest == "" {
-				continue
+			switch ev.Kind {
+			case "started":
+				dialogs.Open(ev.ID)
+			case "finished":
+				if ev.Dest == "" {
+					continue
+				}
+				// The folder is named as well as the file. The complaint
+				// that mattered was never "no notification" but "I cannot
+				// find what it downloaded", and a filename on its own does
+				// not answer that.
+				notify.Completed("Download complete",
+					filepath.Base(ev.Dest)+"\n"+filepath.Dir(ev.Dest))
 			}
-			// The folder is named as well as the file. The complaint that
-			// mattered was never "no notification" but "I cannot find what
-			// it downloaded", and a filename on its own does not answer
-			// that.
-			notify.Completed("Download complete",
-				filepath.Base(ev.Dest)+"\n"+filepath.Dir(ev.Dest))
 		}
 	}()
 
@@ -207,6 +228,7 @@ func Start(o Options) (*Instance, error) {
 		httpSrv:  hs,
 		release:  release,
 		watch:    watch,
+		dialogs:  dialogs,
 	}, nil
 }
 
@@ -233,6 +255,13 @@ func (i *Instance) Shutdown(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
 	var err error
+
+	// The transfer dialogs go first, while the queue they are reporting on
+	// is still answering: they poll it, and a window closed after its source
+	// had gone would have one last tick to spend on a queue already stopped.
+	if i.dialogs != nil {
+		i.dialogs.CloseAll()
+	}
 
 	if i.watch != nil {
 		i.watch.Stop()

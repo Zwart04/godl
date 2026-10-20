@@ -138,6 +138,7 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 		{"move-up", http.MethodPost, "/api/downloads/none/move-up", ""},
 		{"move-down", http.MethodPost, "/api/downloads/none/move-down", ""},
 		{"category", http.MethodPost, "/api/downloads/none/category", `{"category":"Music"}`},
+		{"status dialog", http.MethodPost, "/api/downloads/none/status", ""},
 		{"clipboard offer", http.MethodGet, "/api/clipboard", ""},
 		{"clipboard accept", http.MethodPost, "/api/clipboard/accept", ""},
 		{"clipboard ignore", http.MethodPost, "/api/clipboard/ignore", ""},
