@@ -15,6 +15,10 @@
 $root = Split-Path -Parent $PSScriptRoot
 $tmp  = Join-Path $env:TEMP "godl-smoke"
 $gui  = Join-Path $root "build\bin\godl.exe"
+# Any other build can be put through the same suite by naming it. That is how
+# a race-enabled binary is checked: a detector that never sees a real transfer
+# under real concurrency has the interesting half of the program left out.
+if ($env:GODL_SMOKE_EXE) { $gui = $env:GODL_SMOKE_EXE }
 
 $script:pass = 0
 $script:fail = 0
@@ -203,7 +207,12 @@ $env:GODL_HOME = $home2
 # From here the manager can rewrite the browser tables, so the values above
 # are worth putting back.
 $script:keysTouched = $true
-$guiProc = Start-Process -FilePath $gui -PassThru
+# A windowed program has no console to write to, so anything it says on stderr
+# - and in a race-enabled build, a race report - vanishes without this. The
+# check at the end reads the file back.
+$guiLog = Join-Path $tmp "godl.stderr.log"
+Remove-Item $guiLog -Force -ErrorAction SilentlyContinue
+$guiProc = Start-Process -FilePath $gui -PassThru -RedirectStandardError $guiLog
 Check "godl.exe started" ($null -ne $guiProc) "Start-Process returned nothing"
 
 $endpointFile = Join-Path $home2 "api-endpoint"
@@ -607,6 +616,16 @@ Check "window closed on request" ([bool]$exited) "still running after WM_CLOSE (
 
 Check "endpoint removed on shutdown" (-not (Test-Path $endpointFile)) "api-endpoint still present"
 Check "lock released on shutdown" (-not (Test-Path $lockFile)) "manager.lock still present"
+
+# The check that only says something when the binary is built with -race, and
+# costs nothing when it is not. A race the detector found is a corruption that
+# happened during this very run, under real transfers - the half of the
+# program that unit tests, however concurrent, never quite reach.
+$stderr = if (Test-Path $guiLog) { Get-Content $guiLog -Raw } else { '' }
+$racy = $stderr -match 'WARNING: DATA RACE'
+$evidence = ''
+if ($racy) { $evidence = (($stderr -split "`r?`n") | Select-Object -First 8) -join ' // ' }
+Check "manager reported no data race" (-not $racy) $evidence
 
 # ── summary ────────────────────────────────────────────────────────────────
 Cleanup

@@ -439,6 +439,12 @@ a link copied to the clipboard is only ever offered, that a second launch is
 refused rather than becoming a second scheduler, and that closing the window
 releases the single-instance lock. It puts the clipboard back afterwards.
 
+`GODL_SMOKE_EXE` points that same suite at another binary, which is how a
+race-enabled build is checked - `wails build -race`, giving the detector real
+concurrent transfers instead of only the unit tests. A windowed program has
+no console to write to, so the suite captures the manager's stderr to a file
+and fails at the end if the detector ever found something.
+
 Unit tests cover segment planning, resume and restart, concurrency limits,
 state recovery, the HTTP control API, categories and folder rules, the
 clipboard watcher, the native messaging protocol, and browser registration.
