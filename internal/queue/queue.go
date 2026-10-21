@@ -900,16 +900,42 @@ func (q *Queue) Cancel(id string) error {
 	})
 }
 
-// Remove deletes a download record and its partial file.
+// Remove deletes a download record and its partial file. A finished file is
+// left where it landed.
 func (q *Queue) Remove(id string) error {
+	return q.remove(id, false)
+}
+
+// RemoveWithFile deletes the record and, when the transfer finished, the file
+// itself. It is the "delete from the folder too" answer, which is why a file
+// that is still there but cannot be removed keeps the record: the person can
+// close whatever holds it and try again instead of losing both at once.
+func (q *Queue) RemoveWithFile(id string) error {
+	return q.remove(id, true)
+}
+
+func (q *Queue) remove(id string, withFile bool) error {
 	if e := q.liveEntry(id); e != nil {
 		e.markDiscarded()
 		e.stop()
 	}
 	q.recMu.Lock()
 	defer q.recMu.Unlock()
-	if d, err := q.load(id); err == nil && d.PartPath != "" {
-		_ = os.Remove(d.PartPath)
+
+	d, err := q.load(id)
+	if err == nil {
+		if d.PartPath != "" {
+			_ = os.Remove(d.PartPath)
+		}
+		// Only a finished download has a file of its own at Dest. An
+		// unfinished one keeps its bytes in PartPath, which was just
+		// discarded; trying Dest there could only fail or, worse, remove
+		// a file that another record now owns.
+		if withFile && d.Status == state.StatusDone && d.Dest != "" {
+			if err := os.Remove(d.Dest); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("could not delete the file: %w", err)
+			}
+		}
 	}
 	return q.Store.Delete(id)
 }

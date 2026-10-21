@@ -65,6 +65,12 @@ type Options struct {
 	// windows; a headless run leaves this nil and never needs it because
 	// AutoAccept consumes the capture instead of holding it.
 	OnCapture func()
+
+	// OnCaptureAnswered is called once a waiting handover has been started
+	// or put down, with the number still waiting. It lets the window return
+	// from the small download dialog to the manager, or keep the dialog up
+	// for the next question.
+	OnCaptureAnswered func(remaining int)
 }
 
 // ErrAlreadyRunning reports that another manager owns this directory.
@@ -165,6 +171,7 @@ func Start(o Options) (*Instance, error) {
 	// before the listener starts, so a link clicked during start-up is not
 	// the one handover that arrives before anybody is listening.
 	srv.OnCapture = o.OnCapture
+	srv.OnCaptureAnswered = o.OnCaptureAnswered
 	// The transfer dialog, and the API's way of asking for one. It reads the
 	// queue itself, so this is the whole of the connection: the window opens
 	// when a transfer starts, and a double-click in the list asks for the

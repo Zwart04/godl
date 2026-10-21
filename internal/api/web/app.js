@@ -36,7 +36,9 @@ const ui = {
   schedule: $('t-schedule'),
   reveal: $('t-reveal'),
   remove: $('t-remove'),
+  emptyAdd: $('empty-add'),
   modal: $('modal'),
+  mTitle: $('m-title'),
   url: $('m-url'),
   name: $('m-name'),
   seg: $('m-seg'),
@@ -72,6 +74,14 @@ const ui = {
   clErr: $('cl-error'),
   clNo: $('cl-no'),
   clYes: $('cl-yes'),
+  rmModal: $('remove'),
+  rmWho: $('rm-who'),
+  rmFileRow: $('rm-file-row'),
+  rmFile: $('rm-file'),
+  rmHint: $('rm-hint'),
+  rmErr: $('rm-error'),
+  rmCancel: $('rm-cancel'),
+  rmOk: $('rm-ok'),
   toast: $('toast'),
 };
 
@@ -491,10 +501,12 @@ async function act(action) {
 
 function openModal() {
   ui.modal.hidden = false;
+  ui.mTitle.textContent = 'Add download';
   ui.mErr.hidden = true;
   ui.mErr.textContent = '';
   ui.mSize.hidden = true;
   ui.mSize.textContent = '';
+  ui.url.readOnly = false;
   ui.url.value = '';
   ui.name.value = '';
   ui.mCat.value = '';
@@ -766,6 +778,84 @@ async function submitCategory() {
   }
 }
 
+/* ── delete sheet ───────────────────────────────────────────────────────── */
+
+/* Removing the record and removing the file are two different acts, and the
+ * second one cannot be undone. The sheet asks once, with the file left alone
+ * unless the box is ticked, so the quiet answer is the safe one. */
+function openRemove() {
+  const d = current();
+  if (!d) return;
+
+  ui.rmModal.hidden = false;
+  ui.rmErr.hidden = true;
+  ui.rmErr.textContent = '';
+  ui.rmWho.textContent = baseName(d.dest) || d.url || '';
+  ui.rmWho.title = d.dest || d.url || '';
+
+  const finished = d.status === 'done';
+  ui.rmFileRow.hidden = !finished;
+  ui.rmFile.checked = false;
+  removeHint();
+  setTimeout(() => (finished ? ui.rmFile : ui.rmOk).focus(), 40);
+}
+
+function closeRemove() {
+  ui.rmModal.hidden = true;
+}
+
+function removeError(message) {
+  ui.rmErr.textContent = message;
+  ui.rmErr.hidden = false;
+}
+
+function removeHint() {
+  const d = current();
+  if (!d) return;
+  if (d.status !== 'done') {
+    ui.rmHint.textContent = 'Only the entry is removed. A partial file is discarded either way.';
+    return;
+  }
+  const folder = folderOf(d.dest);
+  ui.rmHint.textContent = ui.rmFile.checked
+    ? 'The file will be deleted from ' + folder + ' as well.'
+    : 'The downloaded file stays in ' + folder + '.';
+}
+
+function folderOf(path) {
+  const value = String(path || '');
+  const cut = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+  return cut > 0 ? value.slice(0, cut) : value;
+}
+
+async function submitRemove() {
+  const d = current();
+  if (!d) {
+    closeRemove();
+    return;
+  }
+
+  const withFile = !ui.rmFileRow.hidden && ui.rmFile.checked;
+  ui.rmOk.disabled = true;
+  ui.rmOk.textContent = 'Deleting…';
+  try {
+    await api('/api/downloads/' + enc(d.id) + (withFile ? '?file=1' : ''), {
+      method: 'DELETE',
+    });
+    closeRemove();
+    toast(withFile ? 'Deleted from the list and the folder.' : 'Removed from the list.', false);
+    await refresh();
+  } catch (err) {
+    // A file held open by another program lands here, with its own message.
+    // The record is still there, so the person can close that program and
+    // press Delete again instead of losing the row as well.
+    removeError(err.message);
+  } finally {
+    ui.rmOk.disabled = false;
+    ui.rmOk.textContent = 'Delete';
+  }
+}
+
 /* ── copied-link sheet ──────────────────────────────────────────────────── */
 
 /* The address the manager is holding out. It is watched rather than assumed:
@@ -775,7 +865,7 @@ let clipLink = '';
 
 function anySheetOpen() {
   return !ui.clipModal.hidden || !ui.catModal.hidden || !ui.schedModal.hidden ||
-    !ui.limitModal.hidden || !ui.modal.hidden;
+    !ui.limitModal.hidden || !ui.rmModal.hidden || !ui.modal.hidden;
 }
 
 function openClipboard(url) {
@@ -902,11 +992,22 @@ function showCaptureSize(c) {
 function openCapture(c) {
   captureID = c.id;
   openModal();
+  ui.mTitle.textContent = 'Download file';
+  // The link is the browser's, not something to retype. Leaving it editable
+  // in a dialog this small only invites a cursor into the one field nobody
+  // came here to change.
+  ui.url.readOnly = true;
   ui.url.value = c.url || '';
   ui.name.value = c.filename || '';
   if (c.category) ui.mCat.value = c.category;
   if (c.connections > 0) ui.seg.value = String(c.connections);
   showCaptureSize(c);
+  // Ready to be renamed: the name is the one thing most people do change.
+  setTimeout(() => {
+    if (!captureID) return;
+    ui.name.focus();
+    ui.name.select();
+  }, 40);
 }
 
 /* Asked on its own rhythm, like the captured link's. A browser capture is a
@@ -999,6 +1100,12 @@ ui.ctCancel.addEventListener('click', closeCategory);
 ui.ctOk.addEventListener('click', submitCategory);
 ui.ctWhere.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCategory(); });
 
+ui.rmModal.addEventListener('click', (e) => { if (e.target === ui.rmModal) closeRemove(); });
+ui.rmCancel.addEventListener('click', closeRemove);
+ui.rmOk.addEventListener('click', submitRemove);
+ui.rmFile.addEventListener('change', removeHint);
+ui.emptyAdd.addEventListener('click', openModal);
+
 ui.clipModal.addEventListener('click', (e) => { if (e.target === ui.clipModal) closeClipboard(); });
 ui.clNo.addEventListener('click', closeClipboard);
 ui.clYes.addEventListener('click', submitClipboard);
@@ -1013,7 +1120,7 @@ ui.resume.addEventListener('click', () => {
 });
 ui.stop.addEventListener('click', () => act('cancel'));
 ui.reveal.addEventListener('click', () => act('reveal'));
-ui.remove.addEventListener('click', () => act('remove'));
+ui.remove.addEventListener('click', openRemove);
 
 document.addEventListener('keydown', (e) => {
   // The sheets stack, so the one on top answers first - otherwise Escape
@@ -1036,6 +1143,10 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeLimit();
     return;
   }
+  if (!ui.rmModal.hidden) {
+    if (e.key === 'Escape') closeRemove();
+    return;
+  }
   if (!ui.modal.hidden) {
     if (e.key === 'Escape') closeModal();
     return;
@@ -1045,7 +1156,7 @@ document.addEventListener('keydown', (e) => {
     openModal();
     return;
   }
-  if (e.key === 'Delete' && selected) act('remove');
+  if (e.key === 'Delete' && selected) openRemove();
 });
 
 document.querySelectorAll('.th[data-sort]').forEach((th) => {
@@ -1088,6 +1199,19 @@ async function refresh() {
       toast('Lost touch with the manager: ' + err.message, true);
     }
   }
+}
+
+/* Closing the small capture window hides it, because the manager keeps
+ * running in the tray. For this one question that is a dismissal: leaving it
+ * pending would put the same link in front of the person on the next click. */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && captureID) closeModal();
+});
+
+// The Go side emits this as soon as the window is in front, so the sheet
+// does not wait for the next poll and leave a blank small window on screen.
+if (window.runtime && window.runtime.EventsOn) {
+  window.runtime.EventsOn('godl:capture', () => { pollCaptures(); });
 }
 
 async function bootstrap() {

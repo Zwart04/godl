@@ -41,8 +41,32 @@ const (
 
 	swpNoSize     = 0x0001
 	swpNoMove     = 0x0002
+	swpNoZOrder   = 0x0004
+	swpNoActivate = 0x0010
 	swpShowWindow = 0x0040
 )
+
+// Bounds is a normal (not minimized, not maximized) window rectangle. Sizes
+// are in DIPs, the unit Wails uses for SetSize; the position is in screen
+// pixels, which is what SetWindowPos and Wails' own position calls use.
+type Bounds struct {
+	Width, Height int
+}
+
+// The parts of WINDOWPLACEMENT this package reads. The struct is filled by
+// user32, so the fields and their order have to match the Windows one.
+type point struct{ X, Y int32 }
+
+type rect struct{ Left, Top, Right, Bottom int32 }
+
+type windowPlacement struct {
+	Length           uint32
+	Flags            uint32
+	ShowCmd          uint32
+	PtMinPosition    point
+	PtMaxPosition    point
+	RcNormalPosition rect
+}
 
 var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
@@ -54,6 +78,9 @@ var (
 	procGetWindowThreadProcessID = user32.NewProc("GetWindowThreadProcessId")
 	procGetWindowLongW           = user32.NewProc("GetWindowLongW")
 	procIsIconic                 = user32.NewProc("IsIconic")
+	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
+	procGetWindowPlacement       = user32.NewProc("GetWindowPlacement")
+	procGetDpiForWindow          = user32.NewProc("GetDpiForWindow")
 	procShowWindow               = user32.NewProc("ShowWindow")
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
@@ -127,6 +154,83 @@ func Show(title string) {
 		procShowWindow.Call(hwnd, swShow)
 	}
 	raise(hwnd)
+}
+
+// Visible reports whether the window captioned title is open on the desktop.
+// A window hidden in the tray is not, and that is the case the capture dialog
+// is built for: an already-open manager should not be folded down to a small
+// window just because a browser handed it a link. A minimized window is also
+// not open in that sense - the person is looking at the browser, not at the
+// manager - so it takes the same small-dialog path.
+func Visible(title string) bool {
+	hwnd := find(title)
+	if hwnd == 0 {
+		return false
+	}
+	shown, _, _ := procIsWindowVisible.Call(hwnd)
+	if shown == 0 {
+		return false
+	}
+	iconic, _, _ := procIsIconic.Call(hwnd)
+	return iconic == 0
+}
+
+// Minimized reports whether the window captioned title is minimized. A
+// handoff into a minimized window is compacted, but the window has to be
+// restored before it can be shown as the dialog.
+func Minimized(title string) bool {
+	hwnd := find(title)
+	if hwnd == 0 {
+		return false
+	}
+	iconic, _, _ := procIsIconic.Call(hwnd)
+	return iconic != 0
+}
+
+// Placement returns the rectangle the window would occupy when restored.
+// GetWindowRect reports the small taskbar rectangle while a window is
+// minimized, so saving that would restore the manager to the size of its
+// icon. GetWindowPlacement keeps the normal rectangle across both the
+// minimized and the hidden state.
+func Placement(title string) (Bounds, bool) {
+	hwnd := find(title)
+	if hwnd == 0 {
+		return Bounds{}, false
+	}
+
+	var wp windowPlacement
+	wp.Length = uint32(unsafe.Sizeof(wp))
+	if ok, _, _ := procGetWindowPlacement.Call(hwnd,
+		uintptr(unsafe.Pointer(&wp))); ok == 0 {
+		return Bounds{}, false
+	}
+
+	dpi := uintptr(96)
+	if procGetDpiForWindow.Find() == nil {
+		if got, _, _ := procGetDpiForWindow.Call(hwnd); got != 0 {
+			dpi = got
+		}
+	}
+	toDIP := func(v int32) int { return int(v) * 96 / int(dpi) }
+
+	r := wp.RcNormalPosition
+	return Bounds{
+		Width:  toDIP(r.Right - r.Left),
+		Height: toDIP(r.Bottom - r.Top),
+	}, true
+}
+
+// MoveTo places the window at an absolute screen position without changing
+// its size or activation. Wails' own SetPosition is relative to the monitor's
+// work area, so a position that already names the monitor would be counted
+// twice; this keeps the saved point exact.
+func MoveTo(title string, x, y int) {
+	hwnd := find(title)
+	if hwnd == 0 {
+		return
+	}
+	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), 0, 0,
+		swpNoSize|swpNoZOrder|swpNoActivate)
 }
 
 func find(title string) uintptr {

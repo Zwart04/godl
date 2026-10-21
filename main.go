@@ -46,6 +46,12 @@ const (
 	// window still showing the full IDM-style row.
 	minWidth  = 760
 	minHeight = 460
+
+	// The size a browser handover is asked in. A window hidden in the tray
+	// unfolds into this rather than showing the whole manager: the question
+	// is one file, and the list behind it is not part of the answer.
+	captureWidth  = 540
+	captureHeight = 500
 )
 
 func main() {
@@ -97,6 +103,10 @@ func runWindow(noClipboard bool) {
 	// clicked quickly are two questions, and the window only has to come
 	// forward once to show both.
 	handoffs := make(chan struct{}, 1)
+	// Answered carries how many questions are still waiting. One slot is
+	// enough: the window only has to know whether it may unfold again, and
+	// reading the newest count is what that answer is.
+	answered := make(chan int, 1)
 
 	inst, err := app.Start(app.Options{
 		Parallel:    3,
@@ -105,6 +115,12 @@ func runWindow(noClipboard bool) {
 		OnCapture: func() {
 			select {
 			case handoffs <- struct{}{}:
+			default:
+			}
+		},
+		OnCaptureAnswered: func(remaining int) {
+			select {
+			case answered <- remaining:
 			default:
 			}
 		},
@@ -168,6 +184,15 @@ func runWindow(noClipboard bool) {
 			return !quitting.Load() // Only tray Exit may close the manager.
 		},
 		OnStartup: func(ctx context.Context) {
+			// Only this loop touches these: every handover and every answer
+			// arrives here, one at a time, which is also the order the window
+			// has to be resized in.
+			var compact bool
+			normal := struct {
+				width, height, x, y int
+				center              bool
+			}{}
+
 			go func() {
 				for {
 					select {
@@ -186,11 +211,80 @@ func runWindow(noClipboard bool) {
 							}
 						}
 					case <-handoffs:
+						// A browser handover into a window hidden in the tray
+						// becomes a small download dialog. The manager itself
+						// is not the answer to "may I download this file?" and
+						// filling the screen with it buries the dialog under
+						// a list the person did not ask for. An already-open
+						// window stays as it is and simply comes forward.
+						if !foreground.Visible(title) {
+							normal.width, normal.height = runtime.WindowGetSize(ctx)
+							normal.x, normal.y = runtime.WindowGetPosition(ctx)
+							minimized := foreground.Minimized(title)
+							if minimized {
+								// Wails' size query sees the minimized taskbar
+								// rectangle. Use the saved normal bounds, then hide
+								// immediately so the large window never flashes.
+								if bounds, ok := foreground.Placement(title); ok {
+									normal.width, normal.height = bounds.Width, bounds.Height
+								}
+								normal.center = true
+								runtime.WindowUnminimise(ctx)
+								runtime.WindowHide(ctx)
+							}
+							// Hidden windows can retain a stale off-screen position
+							// after a monitor change or a prior minimized restore.
+							// Do not save that as the normal location.
+							if normal.x < -10000 || normal.y < -10000 {
+								normal.center = true
+							}
+							compact = true
+							// The list's minimum is wider than this dialog,
+							// so it has to be lowered before the resize.
+							runtime.WindowSetMinSize(ctx, 400, 420)
+							runtime.WindowSetSize(ctx, captureWidth, captureHeight)
+							runtime.WindowCenter(ctx)
+							// The sheet is already in the page; this hides the
+							// manager around it before the first frame.
+							runtime.WindowExecJS(ctx, "document.body.classList.add('capture-mode')")
+						}
 						// Shown through Wails so its own visibility state
 						// agrees, then raised by Win32 because WindowShow
 						// alone leaves the window behind the browser.
 						runtime.WindowShow(ctx)
 						foreground.Show(title)
+						// The page can open the sheet now instead of waiting
+						// for its own poll, which keeps the compact window
+						// from sitting blank for half a second.
+						runtime.EventsEmit(ctx, "godl:capture")
+					case remaining := <-answered:
+						if !compact {
+							// It was never folded down; make sure a class left
+							// by an interrupted run cannot outlive the answer.
+							runtime.WindowExecJS(ctx, "document.body.classList.remove('capture-mode')")
+							continue
+						}
+						if remaining > 0 {
+							// Another link is waiting; the page opens the next
+							// question in the same small window.
+							runtime.WindowShow(ctx)
+							foreground.Show(title)
+							runtime.EventsEmit(ctx, "godl:capture")
+							continue
+						}
+						runtime.WindowExecJS(ctx, "document.body.classList.remove('capture-mode')")
+						runtime.WindowSetMinSize(ctx, minWidth, minHeight)
+						runtime.WindowSetSize(ctx, normal.width, normal.height)
+						if normal.center {
+							runtime.WindowCenter(ctx)
+						} else {
+							foreground.MoveTo(title, normal.x, normal.y)
+						}
+						// It was hidden before the handover, so it goes back
+						// there: pressing Download should leave the person in
+						// the browser, not in a manager they did not open.
+						runtime.WindowHide(ctx)
+						compact = false
 					}
 				}
 			}()

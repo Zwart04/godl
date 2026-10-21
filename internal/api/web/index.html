@@ -37,6 +37,8 @@
       <span>Stop</span>
     </button>
 
+    <div class="sep" role="separator"></div>
+
     <button class="tool" id="t-limit" disabled title="Cap how fast this download may transfer">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 11.5a5.5 5.5 0 0 1 11 0"/><path d="M8 11.5l3-3"/></svg>
       <span>Limit</span>
@@ -69,10 +71,14 @@
       <span>Delete</span>
     </button>
 
-    <div class="spacer"></div>
-
-    <span class="where" id="dir" title="Download folder"></span>
+    <span class="spacer"></span>
   </header>
+
+  <div class="page">
+    <div class="page-head">
+      <h1>Downloads</h1>
+      <span class="where" id="dir" title="Download folder"></span>
+    </div>
 
   <div class="grid" role="table" aria-label="Downloads">
     <div class="head" role="row">
@@ -88,7 +94,18 @@
     <div class="body" id="rows" role="rowgroup"></div>
   </div>
 
-  <p class="empty" id="empty" hidden>No downloads yet. Press <kbd>+</kbd> to add one.</p>
+    <div class="empty" id="empty" hidden>
+      <svg viewBox="0 0 48 48" aria-hidden="true">
+        <rect x="7" y="9" width="34" height="30" rx="7"/>
+        <path d="M24 17v10m0 0l-4-4m4 4l4-4M17 32h14"/>
+      </svg>
+      <p>No downloads yet</p>
+      <button class="tool primary" id="empty-add" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+        <span>Add a download</span>
+      </button>
+    </div>
+  </div>
 
   <footer class="statusbar">
     <span id="s-count">0 items</span>
@@ -114,10 +131,28 @@
       <input id="m-url" type="url" spellcheck="false" autocomplete="off" placeholder="https://example.com/file.zip">
     </label>
 
-    <label class="field">
-      <span>Save as</span>
-      <input id="m-name" type="text" spellcheck="false" autocomplete="off" placeholder="Automatic">
-    </label>
+    <!-- The two choices a download dialog is actually made of, side by side:
+         what the file will be called and how many connections will fetch it.
+         Stacking them cost a line of height and made the sheet read as a
+         form rather than as one question. -->
+    <div class="field-pair">
+      <label class="field">
+        <span>Save as</span>
+        <input id="m-name" type="text" spellcheck="false" autocomplete="off" placeholder="Automatic">
+      </label>
+
+      <label class="field conn">
+        <span>Connections</span>
+        <select id="m-seg">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="8" selected>8</option>
+          <option value="16">16</option>
+          <option value="32">32</option>
+        </select>
+      </label>
+    </div>
 
     <!-- Filled from the manager's list at start-up, so the offer here and the
          folders on disk cannot drift apart. Left on Automatic, the file's
@@ -125,18 +160,6 @@
     <label class="field" id="m-cat-row" hidden>
       <span>Save in</span>
       <select id="m-cat"></select>
-    </label>
-
-    <label class="field">
-      <span>Connections</span>
-      <select id="m-seg">
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="4">4</option>
-        <option value="8" selected>8</option>
-        <option value="16">16</option>
-        <option value="32">32</option>
-      </select>
     </label>
 
     <!-- Options are filled from LIMITS in app.js, so the two speed menus can
@@ -214,6 +237,27 @@
     <div class="sheet-actions">
       <button class="tool" id="ct-cancel" type="button">Cancel</button>
       <button class="tool primary" id="ct-ok" type="button">Move</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="remove" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="rm-title">
+    <h2 id="rm-title">Delete download?</h2>
+    <p class="sheet-note" id="rm-who"></p>
+
+    <label class="check" id="rm-file-row">
+      <input id="rm-file" type="checkbox">
+      <span>Also delete the file from the folder</span>
+    </label>
+
+    <p class="sheet-hint" id="rm-hint"></p>
+
+    <p class="sheet-error" id="rm-error" hidden></p>
+
+    <div class="sheet-actions">
+      <button class="tool" id="rm-cancel" type="button">Cancel</button>
+      <button class="tool destructive" id="rm-ok" type="button">Delete</button>
     </div>
   </div>
 </div>

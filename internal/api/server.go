@@ -103,6 +103,12 @@ type Server struct {
 	// windows. Nil is fine and means nobody needs telling.
 	OnCapture func()
 
+	// OnCaptureAnswered is called after one waiting capture has been started
+	// or put down, with the number still waiting. The window that folds
+	// itself into a small download dialog uses this to unfold when the last
+	// question is answered, and to stay small while another one is queued.
+	OnCaptureAnswered func(remaining int)
+
 	// capMu guards captures, for the same reason clipMu is separate from mu:
 	// the browser's handover arrives on its own goroutine while a request
 	// may be answering a different one.
@@ -176,9 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/downloads/{id}/cancel", s.authed(s.action("cancel", func(q *queue.Queue, id string) error {
 		return q.Cancel(id)
 	})))
-	mux.Handle("DELETE /api/downloads/{id}", s.authed(s.action("remove", func(q *queue.Queue, id string) error {
-		return q.Remove(id)
-	})))
+	mux.Handle("DELETE /api/downloads/{id}", s.authed(http.HandlerFunc(s.handleDelete)))
 	mux.Handle("POST /api/downloads/{id}/reveal", s.authed(s.action("reveal", func(q *queue.Queue, id string) error {
 		d, err := q.Store.Load(id)
 		if err != nil {
@@ -482,6 +486,42 @@ func (s *Server) action(name string, fn func(*queue.Queue, string) error) http.H
 		next, _ := s.find(id)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "download": next})
 	})
+}
+
+// handleDelete removes a download. With ?file=1 it also removes the finished
+// file from its folder, which is the choice the delete sheet offers.
+//
+// The file is deleted before the record, so a file that is still open leaves
+// the record in place to try again. Losing both halves of a failed delete would
+// be worse than losing neither.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cur, ok := s.find(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no such download")
+		return
+	}
+
+	withFile := r.URL.Query().Get("file") == "1"
+	if withFile && cur.Status != state.StatusDone {
+		// An unfinished download has only a .part file, which is always
+		// discarded with the record. Saying so is clearer than deleting
+		// something the person did not point at.
+		writeErr(w, http.StatusConflict, "only a finished download has a file to delete")
+		return
+	}
+
+	var err error
+	if withFile {
+		err = s.Queue.RemoveWithFile(id)
+	} else {
+		err = s.Queue.Remove(id)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "file_removed": withFile})
 }
 
 // handleSpeedLimit moves this download's ceiling.
@@ -856,7 +896,7 @@ func (s *Server) handleCaptureAccept(w http.ResponseWriter, r *http.Request) {
 	// that could not be reached costs the address as well as the attempt,
 	// and the only way to try again would be to click the link a second time.
 	if rec.status == http.StatusCreated || rec.status == http.StatusOK {
-		s.dropCapture(id)
+		s.captureAnswered(s.dropCapture(id))
 	}
 }
 
@@ -867,11 +907,12 @@ func (s *Server) handleCaptureAccept(w http.ResponseWriter, r *http.Request) {
 // that into an error would put a complaint in the console every time someone
 // pressed Cancel.
 func (s *Server) handleCaptureIgnore(w http.ResponseWriter, r *http.Request) {
-	s.dropCapture(r.PathValue("id"))
+	s.captureAnswered(s.dropCapture(r.PathValue("id")))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) dropCapture(id string) {
+// dropCapture removes one waiting capture and reports how many are left.
+func (s *Server) dropCapture(id string) int {
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
 	kept := s.captures[:0]
@@ -881,6 +922,16 @@ func (s *Server) dropCapture(id string) {
 		}
 	}
 	s.captures = kept
+	return len(s.captures)
+}
+
+// captureAnswered tells the window how many questions are still waiting. It is
+// called after the lock is released: the window may resize itself and must
+// never do that while a poll of the capture list is blocked behind it.
+func (s *Server) captureAnswered(remaining int) {
+	if s.OnCaptureAnswered != nil {
+		s.OnCaptureAnswered(remaining)
+	}
 }
 
 // handleCategories is the list the window offers, in the order it shows them.

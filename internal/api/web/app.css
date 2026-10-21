@@ -1,9 +1,9 @@
 /* godl interface.
  *
- * Structure follows IDM - toolbar, columnar list, status bar - while the
- * visual language follows Apple's: one neutral background, one elevated
- * surface, hairline separators instead of borders, generous row height and a
- * single accent colour reserved for selection and progress.
+ * One neutral canvas, one elevated list, hairline separators instead of
+ * borders, and a single accent colour for the one action that starts
+ * something. The shapes are deliberately quiet: what a download manager shows
+ * is mostly numbers changing, and the interface should not compete with them.
  *
  * No framework and no bundler: these rules ship as written.
  */
@@ -14,20 +14,20 @@
   --text:      #1d1d1f;
   --text-2:    #6e6e73;
   --text-3:    #8e8e93;
-  --hairline:  rgba(0, 0, 0, .075);
-  --hairline-2:rgba(0, 0, 0, .10);
+  --hairline:  rgba(0, 0, 0, .07);
+  --hairline-2:rgba(0, 0, 0, .11);
   --accent:    #0071e3;
   --accent-2:  #0a84ff;
   --green:     #34c759;
   --amber:     #ff9f0a;
   --red:       #ff3b30;
-  --hover:     rgba(0, 0, 0, .045);
-  --sel:       #e3f0fd;
-  --radius:    7px;
-  --row-h:     44px;
+  --hover:     rgba(0, 0, 0, .035);
+  --sel:       rgba(0, 113, 227, .075);
+  --radius:    8px;
+  --row-h:     52px;
 
   /* Shared by the header and every row so the columns always line up. */
-  --cols: minmax(160px, 1fr) 104px 86px 186px 92px 86px 52px;
+  --cols: minmax(180px, 1fr) 108px 84px 178px 92px 82px 46px;
 }
 
 * { box-sizing: border-box; }
@@ -63,11 +63,13 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--hairline);
+  gap: 2px;
   flex: none;
+  height: 52px;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, .88);
+  border-bottom: 1px solid var(--hairline);
+  backdrop-filter: saturate(180%) blur(18px);
 }
 
 .spacer { flex: 1; }
@@ -77,40 +79,40 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 26px;
-  margin-right: 10px;
-  padding-right: 13px;
+  height: 30px;
+  margin-right: 8px;
+  padding-right: 14px;
   border-right: 1px solid var(--hairline-2);
   user-select: none;
 }
 
 .brand img {
   display: block;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
 }
 
 .brand span {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -.012em;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -.015em;
   color: var(--text);
 }
 
-
 .sep {
   width: 1px;
-  height: 18px;
-  margin: 0 6px;
+  height: 20px;
+  margin: 0 7px;
   background: var(--hairline-2);
 }
 
 .tool {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 28px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--radius);
@@ -118,22 +120,24 @@ body {
   color: var(--text);
   font: inherit;
   font-size: 12.5px;
+  line-height: 1;
   cursor: pointer;
   transition: background .12s ease, color .12s ease, opacity .12s ease;
 }
 
 .tool:hover:not(:disabled) { background: var(--hover); }
-.tool:active:not(:disabled) { background: rgba(0, 0, 0, .08); }
+.tool:active:not(:disabled) { background: rgba(0, 0, 0, .07); }
 
 .tool:disabled {
   color: var(--text-3);
   cursor: default;
-  opacity: .55;
+  opacity: .5;
 }
 
 .tool svg {
-  width: 14px;
-  height: 14px;
+  flex: none;
+  width: 15px;
+  height: 15px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
@@ -144,12 +148,14 @@ body {
 /* An arrow needs no caption, and leaving the label off buys back the width
    the rest of the bar is competing for. */
 .tool.icon { padding: 0 7px; }
-.tool.icon svg { width: 15px; height: 15px; }
+.tool.icon svg { width: 16px; height: 16px; }
 
 .tool.primary {
   background: var(--accent);
   color: #fff;
+  padding: 0 13px;
   font-weight: 550;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .08);
 }
 .tool.primary:hover:not(:disabled) { background: var(--accent-2); }
 .tool.primary:active:not(:disabled) { background: #0060d0; }
@@ -159,13 +165,39 @@ body {
   color: var(--red);
 }
 
+/* The page title carries the folder, so the toolbar can stay a row of
+   actions rather than a row of actions plus a path that is read once. */
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px 12px;
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: none;
+  padding: 16px 6px 12px;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -.022em;
+}
+
 .where {
-  font-size: 11.5px;
-  color: var(--text-3);
-  max-width: 34vw;
+  margin-left: auto;
+  max-width: 48%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-3);
 }
 
 /* ── Table ───────────────────────────────────────────────────────────── */
@@ -175,8 +207,11 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   background: var(--surface);
-  border-bottom: 1px solid var(--hairline);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .035), 0 12px 30px rgba(0, 0, 0, .035);
 }
 
 .head {
@@ -184,10 +219,11 @@ body {
   grid-template-columns: var(--cols);
   align-items: center;
   flex: none;
+  height: 34px;
   padding: 0 16px;
-  height: 30px;
   border-bottom: 1px solid var(--hairline);
-  background: var(--surface);
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: blur(10px);
   position: sticky;
   top: 0;
   z-index: 2;
@@ -200,7 +236,7 @@ body {
   font: inherit;
   font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: .05em;
+  letter-spacing: .055em;
   text-transform: uppercase;
   color: var(--text-3);
   text-align: left;
@@ -238,12 +274,13 @@ body {
   transition: background .1s ease;
 }
 
+.row:last-child { border-bottom: 0; }
 .row:hover { background: var(--hover); }
-.row.selected { background: var(--sel); }
+.row.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
 .row.selected:hover { background: var(--sel); }
 
 .cell {
-  padding: 7px 8px 7px 0;
+  padding: 8px 8px 8px 0;
   overflow: hidden;
   font-variant-numeric: tabular-nums;
 }
@@ -259,14 +296,16 @@ body {
 .cell.name { min-width: 0; }
 
 .fname {
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: -.005em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .furl {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 11px;
   color: var(--text-3);
   white-space: nowrap;
@@ -277,41 +316,38 @@ body {
 .cell.size, .cell.rate, .cell.eta, .cell.segs { color: var(--text-2); }
 .cell.segs { font-size: 12px; }
 
-/* Category: a chip, and the chip is the control.
- *
- * It lives in the row rather than in the toolbar for two reasons. The bar
- * already carries ten buttons and has no room for an eleventh at the width the
- * window has; and the control for a value belongs next to the value, where
- * nobody has to work out which download a sheet would be about. */
+/* Category: a chip, and the chip is the control. The control for a value
+ * belongs next to the value, where nobody has to work out which download a
+ * sheet would be about. */
 .cell.cat { padding-left: 12px; min-width: 0; }
 
 .chip {
-  border: 1px solid var(--hairline);
+  border: 1px solid transparent;
   background: var(--bg);
   border-radius: 999px;
-  padding: 2px 9px;
+  padding: 2px 10px;
   font: inherit;
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text-2);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color .12s ease, color .12s ease;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
 }
 
-.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.chip:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, .35);
+  background: rgba(0, 113, 227, .06);
+  color: var(--accent);
+}
 .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-/* A transfer under way has the file open, so the manager will refuse to move
- * it. Saying so here is cheaper than a click that comes back as a 409, and it
- * is the same fact the toolbar buttons state for the same reason. */
-.chip:disabled { cursor: default; opacity: .7; }
+.chip:disabled { cursor: default; opacity: .65; }
 
 /* Status: a label above a hairline progress track. */
-.cell.status { display: flex; flex-direction: column; gap: 5px; }
+.cell.status { display: flex; flex-direction: column; gap: 6px; }
 
 .st-text {
   font-size: 12px;
@@ -319,19 +355,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Zero so it can shrink beside a cap instead of pushing the row taller. */
   min-width: 0;
 }
 
 .st-text.err { color: var(--red); }
-.st-text.done { color: var(--green); font-weight: 550; }
-.st-text.run { color: var(--accent); font-weight: 550; }
-/* Waiting on a clock is a held state, not a stalled one, and amber is the
-   difference between the two at a glance. */
-.st-text.wait { color: var(--amber); font-weight: 550; }
+.st-text.done { color: var(--green); font-weight: 600; }
+.st-text.run { color: var(--accent); font-weight: 600; }
+.st-text.wait { color: var(--amber); font-weight: 600; }
 
-/* The label and its cap share one line, so showing a cap never grows the row
-   or costs the list a line of visible downloads. */
 .st-line {
   display: flex;
   align-items: baseline;
@@ -347,9 +378,9 @@ body {
 }
 
 .track {
-  height: 3px;
+  height: 4px;
   border-radius: 2px;
-  background: rgba(0, 0, 0, .08);
+  background: rgba(0, 0, 0, .075);
   overflow: hidden;
 }
 
@@ -367,20 +398,42 @@ body {
 .row.paused .track i { background: var(--amber); }
 .row.cancelled .track i { background: var(--text-3); }
 
-.rate.live { color: var(--text); font-weight: 500; }
+.rate.live { color: var(--text); font-weight: 550; }
 
 /* ── Empty state ─────────────────────────────────────────────────────── */
 
 .empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   margin: 0;
   background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .035), 0 12px 30px rgba(0, 0, 0, .035);
   color: var(--text-3);
-  font-size: 13px;
 }
+
+.empty svg {
+  width: 46px;
+  height: 46px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: .55;
+}
+
+.empty p {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.empty .tool.primary { margin-top: 2px; }
 
 kbd {
   font: inherit;
@@ -399,9 +452,9 @@ kbd {
   align-items: center;
   gap: 10px;
   flex: none;
-  height: 26px;
-  padding: 0 14px;
-  background: var(--surface);
+  height: 30px;
+  padding: 0 20px;
+  background: transparent;
   font-size: 11.5px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
@@ -413,9 +466,9 @@ kbd {
   border-radius: 50%;
   background: var(--hairline-2);
 }
-#s-speed { color: var(--text-2); font-weight: 500; }
+#s-speed { color: var(--text-2); font-weight: 550; }
 
-/* ── Add sheet ───────────────────────────────────────────────────────── */
+/* ── Sheets ──────────────────────────────────────────────────────────── */
 
 .scrim {
   position: fixed;
@@ -423,18 +476,19 @@ kbd {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 14vh;
-  background: rgba(0, 0, 0, .28);
-  backdrop-filter: blur(3px);
+  padding: 11vh 24px 24px;
+  background: rgba(20, 20, 22, .30);
+  backdrop-filter: blur(6px);
   z-index: 40;
 }
 
 .sheet {
-  width: min(460px, calc(100vw - 48px));
-  background: var(--surface);
-  border-radius: 14px;
-  padding: 22px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, .22), 0 0 0 .5px var(--hairline-2);
+  width: min(470px, 100%);
+  background: rgba(255, 255, 255, .985);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .26),
+              0 0 0 .5px rgba(0, 0, 0, .08);
   animation: rise .18s cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -445,24 +499,24 @@ kbd {
 
 .sheet h2 {
   margin: 0 0 16px;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 650;
-  letter-spacing: -.01em;
+  letter-spacing: -.015em;
 }
 
-.field { display: block; margin-bottom: 12px; }
+.field { display: block; margin-bottom: 14px; }
 
-.field span {
+.field > span {
   display: block;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
   font-size: 11.5px;
   color: var(--text-2);
 }
 
 .field input, .field select {
   width: 100%;
-  height: 30px;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 11px;
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius);
   background: var(--surface);
@@ -472,33 +526,51 @@ kbd {
   transition: border-color .12s, box-shadow .12s;
 }
 
-.field select { width: 90px; }
-
-/* The speed limit list reads as text, not as a number to compare, so it needs
-   the room the connection count does not. */
-.field select.wide { width: 150px; }
-
-.field .custom { margin-top: 8px; }
-
-/* A sentence explaining what an empty field will do, which is the one thing
-   a time box cannot say about itself. */
-.sheet-hint {
-  margin: 6px 0 0;
-  font-size: 11.5px;
-  color: var(--text-3);
+/* The Windows menu arrow is the loudest thing in an otherwise quiet sheet. */
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236e6e73' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
 }
 
 .field input:focus, .field select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, .16);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, .15);
 }
 
 .field input::placeholder { color: var(--text-3); }
+.field input[readonly] {
+  background: var(--bg);
+  color: var(--text-2);
+}
+
+/* Save as and Connections: one line, because they are one decision each and
+ * neither needs the whole width. */
+.field-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.field-pair .field { margin-bottom: 0; }
+
+.field .custom { margin-top: 8px; }
+
+.sheet-hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
 
 /* Names the download a control applies to. Long ones ellipsize rather than
    widen the sheet, which would otherwise follow a path off the screen. */
 .sheet-note {
-  margin: -8px 0 14px;
+  margin: -9px 0 15px;
   font-size: 12px;
   color: var(--text-3);
   white-space: nowrap;
@@ -523,40 +595,109 @@ kbd {
   user-select: text;
 }
 
+/* The one place a file may leave the disk, so it looks like a decision
+   rather than another checkbox in a settings page. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .sheet-error {
   margin: 0 0 12px;
   font-size: 12px;
+  line-height: 1.45;
   color: var(--red);
 }
+
 .sheet-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
 .sheet-actions .tool {
-  height: 30px;
-  padding: 0 14px;
+  height: 32px;
+  padding: 0 16px;
   border: 1px solid var(--hairline-2);
+  font-size: 12.5px;
 }
+.sheet-actions .tool:hover:not(:disabled) { background: var(--hover); }
 .sheet-actions .tool.primary { border-color: transparent; }
+.sheet-actions .tool.destructive {
+  border-color: transparent;
+  background: var(--red);
+  color: #fff;
+  font-weight: 550;
+}
+.sheet-actions .tool.destructive:hover:not(:disabled) { background: #e0342b; }
+
+/* ── The small download dialog ────────────────────────────────────────── */
+
+/* A browser handover into a hidden window becomes this: the same sheet, with
+ * the manager folded away around it. The window itself is resized by the Go
+ * side before it is shown, so this class only has to remove everything that
+ * is not the question. */
+body.capture-mode { background: var(--surface); }
+
+body.capture-mode .app,
+body.capture-mode .toast { display: none !important; }
+
+body.capture-mode .scrim {
+  align-items: stretch;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+body.capture-mode .sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  padding: 26px 28px;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  background: var(--surface);
+}
+
+body.capture-mode .sheet-actions { margin-top: auto; }
 
 /* ── Toast ───────────────────────────────────────────────────────────── */
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 44px;
+  bottom: 42px;
   transform: translateX(-50%);
   max-width: min(520px, calc(100vw - 48px));
   padding: 10px 16px;
-  border-radius: 10px;
-  background: #1d1d1f;
+  border-radius: 11px;
+  background: rgba(29, 29, 31, .94);
   color: #f5f5f7;
   font-size: 12.5px;
   line-height: 1.4;
   box-shadow: 0 12px 32px rgba(0, 0, 0, .26);
+  backdrop-filter: blur(10px);
   z-index: 50;
   animation: rise .16s ease;
 }
@@ -565,8 +706,15 @@ kbd {
 
 /* ── Narrow windows ──────────────────────────────────────────────────── */
 
+/* The labels are the first thing to go: every action still has its icon and
+   its title, and the bar stays one line at the window's minimum width. */
+@media (max-width: 1000px) {
+  .toolbar .tool:not(.primary):not(.icon) span { display: none; }
+  .toolbar .tool:not(.primary):not(.icon) { padding: 0 8px; }
+}
+
 @media (max-width: 900px) {
-  :root { --cols: minmax(140px, 1fr) 100px 76px 168px 84px; }
+  :root { --cols: minmax(150px, 1fr) 100px 76px 166px 84px; }
   .th.eta, .th.segs, .cell.eta, .cell.segs { display: none; }
 }
 
@@ -579,11 +727,19 @@ kbd {
   .where { display: none; }
 }
 
+/* Only the capture window ever gets this narrow. Below this the two columns
+   would each be too narrow to read, so they become two lines instead. The
+   threshold is in CSS pixels, and Windows scales the viewport down on a
+   high-DPI screen, so it is lower than the window's own width. */
+@media (max-width: 360px) {
+  .field-pair { grid-template-columns: 1fr; }
+}
+
 /* Scrolling stays out of the way when a list gets long. */
 .body::-webkit-scrollbar { width: 10px; }
 .body::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, .18);
+  background: rgba(0, 0, 0, .16);
   border-radius: 6px;
   border: 3px solid var(--surface);
 }
-.body::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, .3); }
+.body::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, .28); }

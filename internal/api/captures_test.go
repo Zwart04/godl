@@ -115,6 +115,35 @@ func TestCaptureHoldsTheDownloadUntilItIsAnswered(t *testing.T) {
 	}
 }
 
+// The window folds itself into a small dialog for a handover. It needs to know
+// whether answering one leaves another question waiting, so it stays small for
+// the next sheet instead of unfolding and folding again.
+func TestCaptureAnsweredReportsHowManyAreStillWaiting(t *testing.T) {
+	f := newFixture(t)
+	answers := make(chan int, 4)
+	f.server.OnCaptureAnswered = func(remaining int) { answers <- remaining }
+
+	srv := ranged(t, make([]byte, 4096))
+	firstRec := postCapture(t, f, `{"url":"`+srv.URL+`/one.bin","filename":"one.bin"}`)
+	first := captureID(t, firstRec)
+	secondRec := postCapture(t, f, `{"url":"`+srv.URL+`/two.bin","filename":"two.bin"}`)
+	second := captureID(t, secondRec)
+
+	if acc := call(t, f, http.MethodPost, "/api/captures/"+first+"/accept", testToken, ""); acc.Code != http.StatusCreated {
+		t.Fatalf("accept = %d: %s", acc.Code, acc.Body.String())
+	}
+	if got := <-answers; got != 1 {
+		t.Fatalf("after one answer, remaining = %d, want 1", got)
+	}
+
+	if ign := call(t, f, http.MethodPost, "/api/captures/"+second+"/ignore", testToken, ""); ign.Code != http.StatusOK {
+		t.Fatalf("ignore = %d: %s", ign.Code, ign.Body.String())
+	}
+	if got := <-answers; got != 0 {
+		t.Fatalf("after the last answer, remaining = %d, want 0", got)
+	}
+}
+
 func TestCaptureAcceptAppliesWhatTheWindowChanged(t *testing.T) {
 	f := newFixture(t)
 	srv := ranged(t, make([]byte, 4096))

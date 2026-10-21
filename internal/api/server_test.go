@@ -465,6 +465,86 @@ func TestFinishedDownloadCanBeRemovedButNotRestarted(t *testing.T) {
 	}
 }
 
+// Deleting the record and deleting the file are two answers, and the file is
+// only removed when the caller asks. Removing a finished download without the
+// flag must leave the bytes where they landed.
+func TestDeleteCanLeaveTheFileOrRemoveIt(t *testing.T) {
+	f := newFixture(t)
+	if err := os.MkdirAll(f.filesDir, 0o700); err != nil {
+		t.Fatalf("create files dir: %v", err)
+	}
+
+	finished := &state.Download{
+		ID:        state.NewID(),
+		URL:       "http://example.com/kept.zip",
+		Dest:      filepath.Join(f.filesDir, "kept.zip"),
+		TotalSize: 4,
+		Segments:  state.PlanSegments(4, 1),
+		Status:    state.StatusDone,
+		CreatedAt: time.Now(),
+	}
+	if err := f.store.Save(finished); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := os.WriteFile(finished.Dest, []byte("data"), 0o600); err != nil {
+		t.Fatalf("write finished file: %v", err)
+	}
+
+	rec := call(t, f, http.MethodDelete, "/api/downloads/"+finished.ID, testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete record: status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(finished.Dest); err != nil {
+		t.Fatalf("the file went with the record, but no flag asked for it: %v", err)
+	}
+
+	second := &state.Download{
+		ID:        state.NewID(),
+		URL:       "http://example.com/gone.zip",
+		Dest:      filepath.Join(f.filesDir, "gone.zip"),
+		TotalSize: 4,
+		Segments:  state.PlanSegments(4, 1),
+		Status:    state.StatusDone,
+		CreatedAt: time.Now(),
+	}
+	if err := f.store.Save(second); err != nil {
+		t.Fatalf("save second: %v", err)
+	}
+	if err := os.WriteFile(second.Dest, []byte("data"), 0o600); err != nil {
+		t.Fatalf("write second file: %v", err)
+	}
+
+	rec = call(t, f, http.MethodDelete, "/api/downloads/"+second.ID+"?file=1", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete with file: status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(second.Dest); !os.IsNotExist(err) {
+		t.Fatalf("the file is still there after ?file=1: %v", err)
+	}
+	if _, err := f.store.Load(second.ID); err == nil {
+		t.Error("the record is still on disk after deleting the file")
+	}
+
+	// An unfinished download has only a .part file, which always goes with
+	// the record. Asking for a file there is refused rather than silently
+	// treated as the same thing.
+	queued := &state.Download{
+		ID:        state.NewID(),
+		URL:       "http://example.com/waiting.zip",
+		Dest:      filepath.Join(f.filesDir, "waiting.zip"),
+		PartPath:  filepath.Join(f.filesDir, "waiting.zip.part"),
+		Status:    state.StatusQueued,
+		CreatedAt: time.Now(),
+	}
+	if err := f.store.Save(queued); err != nil {
+		t.Fatalf("save queued: %v", err)
+	}
+	rec = call(t, f, http.MethodDelete, "/api/downloads/"+queued.ID+"?file=1", testToken, "")
+	if rec.Code != http.StatusConflict {
+		t.Errorf("delete unfinished with file: status = %d, want 409", rec.Code)
+	}
+}
+
 func TestAddRejectsAnOversizedBody(t *testing.T) {
 	f := newFixture(t)
 	huge := `{"url":"http://example.com/x","cookie":"` + strings.Repeat("a", 2<<20) + `"}`
