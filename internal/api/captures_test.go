@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,6 +49,35 @@ func captureID(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatal("the capture came back with no id, so the window has nothing to answer with")
 	}
 	return made.Capture.ID
+}
+
+// A handover has to reach the person, not just the queue. The window may be
+// hidden in the tray or sitting behind the browser that sent the link, so the
+// server asks the window to come forward as soon as a capture is waiting.
+func TestCaptureAsksTheWindowToComeForward(t *testing.T) {
+	f := newFixture(t)
+
+	var calls int32
+	f.server.OnCapture = func() { atomic.AddInt32(&calls, 1) }
+
+	srv := ranged(t, make([]byte, 4096))
+	rec := postCapture(t, f, `{"url":"`+srv.URL+`/file.bin","filename":"file.bin"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/captures = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("the window was asked to come forward %d times, want 1", got)
+	}
+
+	// An address godl cannot download is not a question, so it must not pull
+	// the window away from whatever the person was doing.
+	bad := postCapture(t, f, `{"url":"file:///C:/Windows/notepad.exe"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("refused capture = %d, want 400: %s", bad.Code, bad.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("a refused address still asked the window to come forward (%d calls)", got)
+	}
 }
 
 func TestCaptureHoldsTheDownloadUntilItIsAnswered(t *testing.T) {

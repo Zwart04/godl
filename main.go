@@ -29,6 +29,7 @@ import (
 	"godl/internal/app"
 	"godl/internal/browsersetup"
 	"godl/internal/config"
+	"godl/internal/foreground"
 	"godl/internal/state"
 	"godl/internal/tray"
 
@@ -89,10 +90,24 @@ func hasArg(word string) bool {
 }
 
 func runWindow(noClipboard bool) {
+	// A browser handoff is the one moment godl has to speak first. The
+	// window is often hidden in the tray or behind the browser that sent the
+	// link, so the request handler only says "there is something to answer"
+	// and the window loop does the showing. One slot is enough: two links
+	// clicked quickly are two questions, and the window only has to come
+	// forward once to show both.
+	handoffs := make(chan struct{}, 1)
+
 	inst, err := app.Start(app.Options{
 		Parallel:    3,
 		Connections: 8,
 		NoClipboard: noClipboard,
+		OnCapture: func() {
+			select {
+			case handoffs <- struct{}{}:
+			default:
+			}
+		},
 	})
 	if err != nil {
 		if errors.Is(err, app.ErrAlreadyRunning) {
@@ -130,6 +145,7 @@ func runWindow(noClipboard bool) {
 		notify(title, "godl could not add its system tray icon. Check Windows notification-area settings, then restart godl.")
 		return
 	}
+
 	var quitting atomic.Bool
 	runErr := wails.Run(&options.App{
 		Title:             title,
@@ -153,15 +169,28 @@ func runWindow(noClipboard bool) {
 		},
 		OnStartup: func(ctx context.Context) {
 			go func() {
-				for action := range trayIcon.Events() {
-					switch action {
-					case tray.Open:
-						runtime.WindowShow(ctx)
-					case tray.Exit:
-						if confirmQuit(ctx, inst) {
-							quitting.Store(true)
-							runtime.Quit(ctx)
+				for {
+					select {
+					case action, ok := <-trayIcon.Events():
+						if !ok {
+							return
 						}
+						switch action {
+						case tray.Open:
+							runtime.WindowShow(ctx)
+							foreground.Show(title)
+						case tray.Exit:
+							if confirmQuit(ctx, inst) {
+								quitting.Store(true)
+								runtime.Quit(ctx)
+							}
+						}
+					case <-handoffs:
+						// Shown through Wails so its own visibility state
+						// agrees, then raised by Win32 because WindowShow
+						// alone leaves the window behind the browser.
+						runtime.WindowShow(ctx)
+						foreground.Show(title)
 					}
 				}
 			}()

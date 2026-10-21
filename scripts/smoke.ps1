@@ -323,6 +323,8 @@ public class GodlStatusWin {
     public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
     // FindWindow is deliberately not used: PowerShell marshals a null title as
     // an empty string, and FindWindow then matches only an empty caption - so
     // it finds the taskbar and never the dialog. Enumeration by class name has
@@ -840,6 +842,34 @@ $reopened = Wait-For "tray Open restores main window" 10000 {
     if ($mainHandle -ne [IntPtr]::Zero -and [GodlStatusWin]::IsWindowVisible($mainHandle)) { $mainHandle } else { $null }
 }
 Check "tray Open restores main window" ([bool]$reopened) "main window did not return"
+
+# A link handed over while the window is in the tray is the common case: the
+# person is in the browser, and the browser is what owns the foreground. The
+# window has to come back and come forward on its own - showing it underneath
+# the browser is the same as not showing it.
+$guiProc.CloseMainWindow() | Out-Null
+$hiddenAgain = Wait-For "main window hidden again" 10000 {
+    if ($mainHandle -ne [IntPtr]::Zero -and -not [GodlStatusWin]::IsWindowVisible($mainHandle)) { $true } else { $null }
+}
+Check "window hidden again before hand-off" ([bool]$hiddenAgain) "main window still visible"
+
+$handURL = "http://127.0.0.1:$originPort/handoff.bin"
+$handAdd = Invoke-Api "/api/captures" "POST" $true ('{"url":"' + $handURL + '","filename":"handoff.bin"}')
+Check "hand-off accepted while in the tray" ($handAdd.code -eq 201) "got $($handAdd.code): $($handAdd.body)"
+$handID = ''
+try { $handID = ($handAdd.body | ConvertFrom-Json).capture.id } catch {}
+
+$broughtBack = Wait-For "hand-off brings the window back" 10000 {
+    if ($mainHandle -ne [IntPtr]::Zero -and [GodlStatusWin]::IsWindowVisible($mainHandle)) { $true } else { $null }
+}
+Check "hand-off brings the window back" ([bool]$broughtBack) "window stayed hidden after a browser hand-off"
+
+$inFront = Wait-For "hand-off puts the window in front" 5000 {
+    if ([GodlStatusWin]::GetForegroundWindow() -eq $mainHandle) { $true } else { $null }
+}
+Check "hand-off puts the window in front" ([bool]$inFront) "foreground=$([GodlStatusWin]::GetForegroundWindow()) manager=$mainHandle"
+
+if ($handID) { [void](Invoke-Api "/api/captures/$handID/ignore" "POST" $true $null) }
 
 # Closing to tray is not a quit; send the tray Exit action after reopen is proved.
 $guiProc.Refresh()

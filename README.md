@@ -142,6 +142,8 @@ implementation is not.
   nothing is ever lost by trying
 - A desktop notification confirms a successful handoff, and says so when godl
   cannot take the link and the browser keeps the download
+- Brings the window to the front when a handoff arrives, even if it was hidden
+  in the tray or sitting behind the browser that sent the link
 
 **After a download**
 - Files land in your own `Downloads\godl` folder, sorted into category folders

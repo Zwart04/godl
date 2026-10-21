@@ -59,6 +59,12 @@ type Options struct {
 	// started at once instead of waiting for an answer nobody is going to
 	// give, because a manager that silently drops links is worse than none.
 	Headless bool
+
+	// OnCapture is called when a browser handover is waiting for an answer,
+	// so the caller can bring its window to the front. The engine owns no
+	// windows; a headless run leaves this nil and never needs it because
+	// AutoAccept consumes the capture instead of holding it.
+	OnCapture func()
 }
 
 // ErrAlreadyRunning reports that another manager owns this directory.
@@ -155,6 +161,10 @@ func Start(o Options) (*Instance, error) {
 	// With no window there is nobody to put a download dialog in front of,
 	// so a capture becomes a transfer instead of waiting for an answer.
 	srv.AutoAccept = o.Headless
+	// How a window hears that the browser is asking something. Wired here,
+	// before the listener starts, so a link clicked during start-up is not
+	// the one handover that arrives before anybody is listening.
+	srv.OnCapture = o.OnCapture
 	// The transfer dialog, and the API's way of asking for one. It reads the
 	// queue itself, so this is the whole of the connection: the window opens
 	// when a transfer starts, and a double-click in the list asks for the

@@ -874,17 +874,17 @@ function wireLimitSelect(sel, custom) {
  * than add - see submitAdd. */
 let captureID = '';
 
-/* Brings the window forward. A dialog that opens behind the browser is the
- * same as no dialog at all, which is exactly how this looked before the
- * wizard existed: the browser had already erased its own row, and nothing on
- * screen said a transfer had begun. */
+/* Brings a hidden window back. Focus is not something the Wails runtime
+ * offers - there is no WindowSetForeground - and a window that is merely shown
+ * is still behind the browser that sent the link. That is why the Go side
+ * raises the window from the capture handler; this is the belt for a window
+ * hidden by something else. */
 function claimAttention() {
   const rt = window.runtime;
   if (!rt) return;
   try {
     if (rt.WindowUnminimise) rt.WindowUnminimise();
     if (rt.WindowShow) rt.WindowShow();
-    if (rt.WindowSetForeground) rt.WindowSetForeground();
   } catch (_) {
     /* the sheet still opens; it is simply somewhere behind everything */
   }

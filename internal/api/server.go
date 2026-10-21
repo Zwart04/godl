@@ -95,6 +95,14 @@ type Server struct {
 	// asking to be shown something.
 	OpenStatus func(id string)
 
+	// OnCapture is called after a browser capture has been recorded and is
+	// waiting for an answer. A capture answered in a window that is hidden
+	// in the tray or sitting behind the browser is a download the person
+	// never saw arrive; the window package uses this to come to the front.
+	// It is a callback for the same reason OpenStatus is: the API owns no
+	// windows. Nil is fine and means nobody needs telling.
+	OnCapture func()
+
 	// capMu guards captures, for the same reason clipMu is separate from mu:
 	// the browser's handover arrives on its own goroutine while a request
 	// may be answering a different one.
@@ -740,6 +748,13 @@ func (s *Server) handleCaptureAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	s.captures = append(kept, c)
 	s.capMu.Unlock()
+
+	// The answer has to be visible. This is called with no lock held: the
+	// handler may show a window, and a window waking up must never wait on a
+	// mutex that a poll of the capture list is holding.
+	if s.OnCapture != nil {
+		s.OnCapture()
+	}
 
 	// The size is asked for afterwards, on purpose. A dialog that waits on a
 	// server which is slow to answer would be a dialog that is slow to
