@@ -35,8 +35,9 @@ func main() {
 	}
 
 	c := &host.Client{
-		BaseURL: config.ReadEndpoint(),
-		Token:   "",
+		BaseURL:  config.ReadEndpoint(),
+		Token:    "",
+		Endpoint: config.ReadEndpoint,
 	}
 
 	// Without a token every call would be rejected with a message that means

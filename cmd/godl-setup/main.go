@@ -367,13 +367,15 @@ const detachedProcess = 0x00000008
 
 // launch starts the freshly installed program without tying it to this one.
 //
-// Closing the setup window must not close godl, and a setup started from a
-// terminal must not leave godl holding that terminal's console.
+// Closing the setup window must not close godl. The program is built as a
+// windowsgui application, so it has no console to inherit in the first place;
+// starting it detached is enough. HideWindow is deliberately not set: Windows
+// applies STARTUPINFO's show state to the first ShowWindow call, which would
+// leave the manager running with its main window hidden.
 func launch(exe, workDir string) error {
 	cmd := exec.Command(exe)
 	cmd.Dir = workDir
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
 		CreationFlags: detachedProcess,
 	}
 	if err := cmd.Start(); err != nil {

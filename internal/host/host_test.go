@@ -205,6 +205,37 @@ func TestUnreachableManagerExplainsItself(t *testing.T) {
 	}
 }
 
+// The browser keeps the native host alive across a manager restart. The
+// address read at launch then points at a process that is gone, and a handover
+// would fail even though a healthy manager is listening on a new port.
+func TestClientFollowsTheManagerToANewPortAfterARestart(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	old := dead.URL
+	dead.Close()
+
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"ok":true,"downloads":[{"id":"after-restart","status":"done"}]}`)
+	}))
+	t.Cleanup(live.Close)
+
+	c := &Client{
+		BaseURL:  old,
+		Token:    "t",
+		Endpoint: func() string { return live.URL },
+	}
+	replies := run(t, c, Request{Cmd: "list"})
+	if len(replies) != 1 || !replies[0].OK {
+		t.Fatalf("replies = %+v, want the restarted manager's answer", replies)
+	}
+	if len(replies[0].Downloads) != 1 || replies[0].Downloads[0].ID != "after-restart" {
+		t.Fatalf("downloads = %+v, want the one the new manager holds", replies[0].Downloads)
+	}
+	if c.BaseURL != live.URL {
+		t.Errorf("BaseURL = %q, want the new endpoint %q", c.BaseURL, live.URL)
+	}
+}
+
 func TestNeverConfiguredClientSaysHowToFixIt(t *testing.T) {
 	replies := run(t, &Client{}, Request{Cmd: "list"})
 	if replies[0].OK {

@@ -61,6 +61,12 @@ type Client struct {
 	Token   string
 	// HTTP overrides the default client.
 	HTTP *http.Client
+	// Endpoint, when set, is asked for the manager's current address after a
+	// call cannot reach it. The browser keeps this host process alive while
+	// godl restarts - for an update or after a crash - and each manager
+	// records a new loopback port, so the address captured at launch can be
+	// one process out of date.
+	Endpoint func() string
 	// SetupError, when set, is reported for every request instead of making
 	// one. It means godl has never finished starting on this machine, and a
 	// plain "401" would tell the user nothing useful.
@@ -190,6 +196,11 @@ func list(ctx context.Context, c *Client) Response {
 	return Response{OK: true, Downloads: out.Downloads}
 }
 
+// errUnreachable marks a failure to reach the manager at all, as distinct from
+// a reply that refuses the request. Only the former is worth retrying at a new
+// address: a manager that answered "no" has been heard.
+var errUnreachable = errors.New("godl is not reachable")
+
 // roundtrip performs one authenticated call and decodes the manager's reply.
 // A non-2xx becomes an error carrying the manager's own message, so the user
 // sees "the server did not report a size" rather than "status 501".
@@ -199,6 +210,23 @@ func (c *Client) roundtrip(ctx context.Context, method, path string, payload, ou
 		return errors.New("godl is not running - open godl.exe once to set it up")
 	}
 
+	err := c.call(ctx, base, method, path, payload, out)
+	if err == nil || !errors.Is(err, errUnreachable) || c.Endpoint == nil {
+		return err
+	}
+
+	// A restart records a new port. Follow it once; if the manager really is
+	// stopped, the second call fails the same way and the user reads the same
+	// sentence as before.
+	fresh := strings.TrimRight(c.Endpoint(), "/")
+	if fresh == "" || fresh == base {
+		return err
+	}
+	c.BaseURL = fresh
+	return c.call(ctx, fresh, method, path, payload, out)
+}
+
+func (c *Client) call(ctx context.Context, base, method, path string, payload, out any) error {
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -219,7 +247,7 @@ func (c *Client) roundtrip(ctx context.Context, method, path string, payload, ou
 
 	resp, err := c.hc().Do(req)
 	if err != nil {
-		return fmt.Errorf("godl is not reachable: %w", err)
+		return fmt.Errorf("%w: %v", errUnreachable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
