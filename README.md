@@ -419,7 +419,8 @@ ask for, plus the loopback handoff between the browser helper and the manager.
 - A bearer token is generated on first run and stored at
   `%APPDATA%\godl\api-token`. Every API call must present it.
 - The window is served from the same origin and receives the token in its page.
-  A page on another site cannot read that document or call the API.
+  A page on another site cannot read that document or use the API without the
+  token.
 - The endpoint is recorded at `%APPDATA%\godl\api-endpoint`; the browser helper
   reads it locally. Do not port-forward this endpoint or expose it through a
   proxy.

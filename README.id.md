@@ -174,8 +174,9 @@ minta, ditambah komunikasi lokal antara browser dan godl di komputer yang sama.
 | `Downloads\godl` | File hasil unduhan, diurutkan per kategori |
 
 Installer juga membuat shortcut, menambahkan entri startup, dan menulis
-pendaftaran browser. Uninstall menghapus semuanya, tetapi sengaja tidak
-menghapus riwayat dan file unduhanmu.
+pendaftaran browser. Uninstall menghapus program, shortcut, entri startup, dan
+pendaftaran browser; riwayat serta file unduhan sengaja dibiarkan agar tidak
+hilang tanpa persetujuanmu.
 
 ### Ekstensi browser
 
