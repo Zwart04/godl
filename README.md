@@ -15,21 +15,37 @@
   <img alt="Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows11&logoColor=white&labelColor=0078D6">
   <img alt="Wails v2" src="https://img.shields.io/badge/UI-Wails%20v2-5c9ead?labelColor=5c9ead">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-34c759?labelColor=34c759">
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/Zwart04/godl?label=release&color=2ea44f">
   <img alt="No npm" src="https://img.shields.io/badge/dependencies-none%20(npm)-8e8e93?labelColor=8e8e93">
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
+  English · <a href="README.id.md">Bahasa Indonesia</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Zwart04/godl/releases/latest"><img alt="Download for Windows" src="https://img.shields.io/badge/Download%20for%20Windows-godl--setup.exe-0078D6?style=for-the-badge&amp;logo=windows11&amp;logoColor=white"></a>
+  <a href="https://tako.id/Zwart04"><img alt="Support the project" src="https://img.shields.io/badge/Support%20the%20project-tako.id-ff5a5f?style=for-the-badge"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#install-options">Install</a> ·
   <a href="#using-godl">Using godl</a> ·
   <a href="#browser-extension">Browser extension</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#http-api">HTTP API</a> ·
+  <a href="#security-and-privacy">Security</a> ·
+  <a href="#troubleshooting">Troubleshooting</a> ·
+  <a href="#support-the-project">Support</a> ·
   <a href="#development">Development</a>
 </p>
 
 ---
 
-![godl window with a completed download](docs/screenshot.png)
+<p align="center">
+  <img src="docs/screenshot.png" alt="godl download list with a running transfer and completed downloads" width="100%">
+  <br>
+  <sub>Sample data. godl running on Windows 11.</sub>
+</p>
 
 godl splits a file across several HTTP connections at once, so a server that
 would only feed one stream is asked for several at the same time. It resumes
@@ -39,6 +55,78 @@ copies of itself fight over the same file.
 It is written from scratch in Go. Nothing is derived from any existing download
 manager's code, assets, or branding — the layout is familiar on purpose, the
 implementation is not.
+
+## Quick start
+
+**What you need:** Windows 10 or 11 (64-bit). godl installs per-user and does
+not need administrator rights, Go, Node.js, or npm.
+
+> **Windows 10 note:** godl uses the Microsoft Edge WebView2 runtime. Windows 11
+> includes it, and most Windows 10 machines already have it through Edge. If
+> godl opens a blank window or does not open at all, install the
+> [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/consumer/).
+
+### 1. Download the installer
+
+Download **[`godl-setup.exe`](https://github.com/Zwart04/godl/releases/latest/download/godl-setup.exe)**
+from the [latest release](https://github.com/Zwart04/godl/releases/latest).
+It is one file, about 14 MB. The source for every release is in this repository.
+
+### 2. Run the installer
+
+Run `godl-setup.exe`. It copies the programs into
+`%LOCALAPPDATA%\Programs\godl`, creates Start Menu and desktop shortcuts,
+registers browser support, adds godl to Windows startup, and opens the app.
+
+> **If Windows shows “Windows protected your PC”:** the installer is not
+> code-signed yet, so SmartScreen can warn about a new, unsigned program.
+> Choose **More info → Run anyway** only for a file you downloaded from this
+> repository. If you prefer not to bypass the warning, [build from source](#building-it-from-source)
+> or [verify the SHA-256](#verify-the-download) first.
+
+The setup is deliberately small. It does not install a service, a driver, or a
+bundled browser; the interface uses the Microsoft WebView2 runtime. To choose
+another folder, skip autostart, or uninstall, see
+[Install options](#install-options).
+
+### 3. Open godl
+
+Open **godl** from the Start Menu if the installer did not open it. The window
+is the whole interface. Closing it keeps godl running in the notification area;
+use **Exit** from the tray icon when you want to stop it.
+
+Your files land in `Downloads\godl`, sorted into category folders. Download
+history and settings live in `%APPDATA%\godl`.
+
+### 4. Connect Brave (recommended)
+
+The setup registers the browser helper and puts the extension in
+`%LOCALAPPDATA%\Programs\godl\extension\chrome`. Load it once:
+
+1. Open `brave://extensions`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked**.
+4. Select `%LOCALAPPDATA%\Programs\godl\extension\chrome`.
+5. Pin **godl** to the toolbar.
+
+Chrome and Edge use the same folder, through `chrome://extensions` or
+`edge://extensions`. Firefox has a separate folder; see
+[Browser extension](#browser-extension).
+
+### 5. Make your first download
+
+In Brave, click a normal download link. godl opens a small dialog with the file
+name, folder, size, and connection count. Change anything you need, then press
+**Download**. The transfer starts in godl and the file is filed under
+`Downloads\godl`.
+
+You can also press **Add** in godl (`Ctrl`+`N`) and paste a direct `http` or
+`https` file link. Start with 8 connections; godl falls back to one connection
+automatically when a server does not support segmented downloads.
+
+If a link does not behave as expected, see
+[Troubleshooting](#troubleshooting). Nothing is downloaded from a copied link
+or a browser handoff until you confirm it.
 
 ## Features
 
@@ -160,12 +248,12 @@ implementation is not.
   files served by the manager's own handler
 - About 14 MB for the setup, roughly 22 MB once installed
 
-## Install
+## Install options
 
-Grab **[`godl-setup.exe`](https://github.com/Zwart04/godl/releases/latest)**
-and run it. That is the entire installation.
+The default setup in [Quick start](#quick-start) is enough for most people.
+These options are for a custom or scripted install.
 
-It copies `godl.exe`, `godl-host.exe` and the browser extension into
+The setup copies `godl.exe`, `godl-host.exe` and the browser extension into
 `%LOCALAPPDATA%\Programs\godl`, creates Start Menu and desktop shortcuts,
 registers itself with Chrome, Brave, Edge and Firefox, adds itself to Windows
 startup, and opens the app. The extension lands in
@@ -180,7 +268,7 @@ puts it where the browser has already been told to find it.
 .\godl-setup.exe                          # install and start
 .\godl-setup.exe -quiet                   # install without the dialog
 .\godl-setup.exe -dir "D:\Tools\godl"     # install somewhere else
-.\godl-setup.exe -uninstall                # remove it completely
+.\godl-setup.exe -uninstall                # remove programs, shortcuts and browser keys
 .\godl-setup.exe -no-autostart             # install, but not with Windows
 .\godl-setup.exe -no-desktop               # install, but no desktop icon
 ```
@@ -209,6 +297,14 @@ go build -o build\bin\godl-host.exe .\cmd\godl-host
 ## Using godl
 
 Open **godl** from the Start Menu (or the desktop icon the setup created).
+Before the first download the list is empty; use **Add** or click a download link
+in the browser.
+
+<p align="center">
+  <img src="docs/screenshot-empty.png" alt="godl download list before the first download" width="80%">
+  <br>
+  <sub>The first-run view. The list fills as transfers are added.</sub>
+</p>
 
 | | |
 |---|---|
@@ -236,24 +332,71 @@ into your real Downloads folder or rewrites your browser's registration.
 
 ## Browser extension
 
-The extension lives in [`browser-extension/`](browser-extension). Chrome, Edge
-and Brave use `browser-extension/chrome`; Firefox uses
-`browser-extension/firefox`. The logic in both is byte-identical — only the
-manifest differs. Brave reads Chromium's registration, which godl writes as
-well as Chrome's, so one folder covers all three.
+The setup puts the extension files on disk and registers the native messaging
+host for Chrome, Brave, Edge, and Firefox. You only need to load the extension
+into each browser once. Its source is in
+[`browser-extension/`](browser-extension); the Chrome and Firefox copies use the
+same logic and differ only in their manifests.
 
-**1. Register the native messaging host** — the setup does this for you, and
-`godl.exe` does it again on every launch so moving the folder never breaks it.
-(The exception is a run started with `GODL_HOME` set: such a run is a test or a
-throwaway copy, and the browser table belongs to the machine rather than to
-it.) These two commands are only for repairing it by hand:
+<p align="center">
+  <img src="docs/capture.png" alt="godl browser capture dialog showing the address, file name, size, connection count and download button" width="420">
+  <br>
+  <sub>When a browser hands over a link, godl asks first. Nothing is fetched until you press Download.</sub>
+</p>
+
+### Brave, Chrome, and Edge
+
+1. Open `brave://extensions` (or `chrome://extensions` / `edge://extensions`).
+2. Turn on **Developer mode**.
+3. Click **Load unpacked**.
+4. Select `%LOCALAPPDATA%\Programs\godl\extension\chrome`. From a source
+   checkout, use `browser-extension/chrome` instead.
+5. Pin **godl** to the toolbar so you can see when it is active.
+
+Reload the extension once after upgrading godl so the browser picks up the
+`notifications` permission. A desktop notification confirms a successful
+handoff, and tells you when the browser kept the download instead.
+
+### Firefox
+
+1. Open `about:debugging#/runtime/this-firefox`.
+2. Choose **Load Temporary Add-on…**.
+3. Select `%LOCALAPPDATA%\Programs\godl\extension\firefox\manifest.json`.
+
+Firefox treats an unsigned extension as temporary: it is removed when Firefox
+restarts. The Brave/Chrome/Edge route above does not have that limitation.
+
+### Using it
+
+Click a normal download link. godl captures it, brings its window to the front,
+and asks what to do with it: the name, folder, size, connection count, and a
+**Download** button. Change any of it, press **Not now**, or leave it and the
+transfer begins where you said. If godl is not open, it is launched for you.
+
+The asking is controlled by **Ask before each download** in the extension's
+options. Turned off, transfers start as soon as a link is clicked, the way a
+browser does it, only across eight connections instead of one. The options page
+also lets you restrict capture to particular file types and set the connection
+count.
+
+If automatic capture is off, right-click a link and choose
+**Download with godl**. That manual route uses the same local handoff.
+
+### If the browser cannot find godl
+
+The setup registers the native messaging host, and `godl.exe` rewrites the
+registration on each launch. A run started with `GODL_HOME` deliberately skips
+that step, because it is a test or a portable copy. If the browser reports a
+missing host after moving the install, repair the keys by hand:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\godl\godl.exe" --register-browser   # rewrites the keys
-& "$env:LOCALAPPDATA\Programs\godl\godl.exe" --unregister-browser # removes them
+& "$env:LOCALAPPDATA\Programs\godl\godl.exe" --register-browser   # rewrite the keys
+& "$env:LOCALAPPDATA\Programs\godl\godl.exe" --unregister-browser # remove them
 ```
 
-**Switches** — every one of them optional, and every one on the same binary:
+### Command-line switches
+
+Every switch is optional, and every one is on the same binary:
 
 | Switch | What it does |
 | --- | --- |
@@ -263,31 +406,161 @@ it.) These two commands are only for repairing it by hand:
 | `--clipboard` | With `--serve`, watches the clipboard the way the window does |
 | `--no-clipboard` | Turns the watcher off for the window |
 
-**2. Load the extension**
+## Security and privacy
 
-- **Chrome / Edge / Brave** — open `chrome://extensions` (Brave:
-  `brave://extensions`), turn on *Developer mode*, choose *Load unpacked*, and
-  pick `%LOCALAPPDATA%\Programs\godl\extension\chrome` (from a source checkout
-  that is `browser-extension/chrome`). A desktop notification confirms each
-  successful handoff; reload the extension once after upgrading so the browser
-  picks up the `notifications` permission.
-- **Firefox** — open `about:debugging#/runtime/this-firefox`, choose
-  *Load Temporary Add-on…*, and pick `browser-extension/firefox/manifest.json`.
+godl is a local Windows program. There is no account, cloud service, telemetry,
+analytics, or auto-update channel. It contacts the network for the downloads you
+ask for, plus the loopback handoff between the browser helper and the manager.
 
-**3. Use it.** Click any download link. godl captures it, brings its window to
-the front and asks what to do with it: the name, the folder, the size, the
-connection count, and a *Download* button. Change any of it, press *not now*,
-or leave it and the transfer begins where you said. If the app was not open,
-it is launched for you.
+### The local API stays on your machine
 
-The asking is a switch in the extension's options — *Ask before each download*.
-Turned off, transfers start the moment a link is clicked, the way a browser
-does it, only across eight connections instead of one.
+- The control API binds to `127.0.0.1` on a random port. It is not reachable
+  from your local network or the internet.
+- A bearer token is generated on first run and stored at
+  `%APPDATA%\godl\api-token`. Every API call must present it.
+- The window is served from the same origin and receives the token in its page.
+  A page on another site cannot read that document or call the API.
+- The endpoint is recorded at `%APPDATA%\godl\api-endpoint`; the browser helper
+  reads it locally. Do not port-forward this endpoint or expose it through a
+  proxy.
 
-Right-click → *Download with godl* is available as a manual route whenever
-automatic capture is switched off in the extension's options. The options page
-also lets you limit capture to particular file types and set the connection
-count.
+### What is stored, and where
+
+| Path | Contents |
+| --- | --- |
+| `%LOCALAPPDATA%\Programs\godl` | Programs and extension files |
+| `%APPDATA%\godl` | Download history, API token, endpoint, category rules |
+| `Downloads\godl` | Finished files, sorted into category folders |
+
+The installer also creates Start Menu and desktop shortcuts, adds a per-user
+startup entry, and writes the browser native-messaging keys. Uninstalling
+removes those, but deliberately leaves your history and downloaded files for
+you to delete. See [Install options](#install-options) for flags that skip the
+shortcuts or autostart.
+
+### The browser extension
+
+The extension source is in [`browser-extension/`](browser-extension). Its
+manifest asks for `nativeMessaging`, `downloads`, `notifications`, `cookies`,
+`storage`, `contextMenus`, and `<all_urls>`. The broad URL permission is needed
+because a download can start on any site; it is used to notice the download and
+read the cookie, referer, and user agent for that one request. Those values go
+to godl through the local native-messaging pipe, not to a third-party server.
+
+The extension is loaded unpacked, not installed from the Chrome Web Store. You
+can read every line, or build and load it yourself. Firefox treats it as a
+temporary add-on because it is unsigned; Brave, Chrome, and Edge keep the
+unpacked extension until you remove it.
+
+The clipboard watcher is part of the window, not the extension. It reads the
+clipboard only while godl is running, offers only a bare `http`/`https` address,
+and never downloads from a copy without confirmation. Start
+`godl.exe --no-clipboard` to turn it off.
+
+### Installer and SmartScreen
+
+`godl-setup.exe` is not code-signed yet. That is why Windows SmartScreen may
+show **Windows protected your PC** for a new download. The warning reflects the
+missing signature and the file's reputation; it is not an antivirus verdict.
+Only bypass it for a file you downloaded from
+[this repository](https://github.com/Zwart04/godl), and verify the checksum if
+you want certainty.
+
+#### Verify the download
+
+PowerShell can calculate the installer's SHA-256:
+
+```powershell
+Get-FileHash .\godl-setup.exe -Algorithm SHA256 | Format-List
+```
+
+Compare the `Hash` value with the SHA-256 in the
+[latest release notes](https://github.com/Zwart04/godl/releases/latest). If it
+does not match, delete the file and download it again; do not run it. The same
+release notes link to the source tag that produced the installer.
+
+If you would rather not trust a prebuilt unsigned file, build it yourself:
+
+```powershell
+git clone https://github.com/Zwart04/godl.git
+cd godl
+.\build-setup.ps1
+```
+
+### Downloaded files are still files from the internet
+
+godl verifies that its own transfer is internally consistent, but it is not an
+antivirus and does not scan downloaded content. Keep Microsoft Defender or
+another antivirus enabled, and only open files from sources you trust.
+
+To report a security problem, follow [SECURITY.md](SECURITY.md). Please do not
+open a public issue for an exploitable vulnerability.
+
+## Troubleshooting
+
+### The installer is blocked by Windows
+
+This is a SmartScreen warning about an unsigned installer. Choose **More info →
+Run anyway** only after confirming the file came from this repository. If you
+are not comfortable doing that, verify the SHA-256 or build from source as
+described in [Security and privacy](#security-and-privacy). Do not disable
+SmartScreen globally.
+
+### godl does not open
+
+- Make sure you are on 64-bit Windows 10 or 11.
+- Install the [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/consumer/)
+  if the window is blank or never appears. Windows 11 normally includes it.
+- Check the notification area: closing the window hides godl rather than
+  stopping it. Double-click the tray icon to reopen it.
+- If a previous copy is still running, exit it from the tray before launching
+  the new one. godl allows one manager per machine.
+
+### Brave still downloads in the browser
+
+1. Open `brave://extensions` and confirm **godl** is loaded and enabled.
+2. Open the extension's options and confirm **Ask before each download** and
+   download interception are on.
+3. Reload the extension after installing or upgrading godl.
+4. Make sure the native host still points at the installed copy. The repair
+   command is in [Browser extension](#browser-extension).
+5. If godl is not running, the extension deliberately gives the download back
+   to the browser instead of losing it. Start godl and try again.
+
+The same checks apply to Chrome and Edge. Firefox's temporary add-on must be
+loaded again after Firefox restarts.
+
+### A download fails or falls back to one connection
+
+Some servers do not support HTTP Range requests, so godl automatically uses one
+connection. That is expected. A link that worked in a browser but fails in godl
+may depend on a login, an expiring token, a one-time URL, or a site that blocks
+non-browser clients. Re-copy the link from the page, make sure you are signed in,
+or let the browser handle that particular download. godl never removes the
+browser's copy of a failed handoff.
+
+### Where are my files and history
+
+Finished files are in `Downloads\godl`, under the category folder chosen for
+each download. History, the API token, and category settings are in
+`%APPDATA%\godl`. The installer and programs are in
+`%LOCALAPPDATA%\Programs\godl`.
+
+### Uninstall or stop autostart
+
+Run the setup with `-uninstall`:
+
+```powershell
+.\godl-setup.exe -uninstall
+```
+
+This removes the programs, shortcuts, startup entry, and browser registrations.
+It leaves `%APPDATA%\godl` and `Downloads\godl` intact; delete those folders
+yourself if you want a completely clean removal.
+
+To keep godl installed but stop it starting with Windows, use
+`godl-setup.exe -no-autostart`, or disable the **godl** entry in Task Manager →
+Startup apps. Exit godl from its tray icon before uninstalling.
 
 ## How it works
 
@@ -572,6 +845,19 @@ godl/
   received, rate, time left and resume, with the progress bar, the map of which
   connection owns which part of the file, the per-connection table, and
   pause/cancel/hide details that collapse it back to its exact height
+
+## Support the project
+
+godl is free and open source under the MIT license. If it saves you time and
+you would like to support its development, you can do so here:
+
+<p align="center">
+  <a href="https://tako.id/Zwart04"><img alt="Support the godl project on tako.id" src="https://img.shields.io/badge/Support%20the%20project-tako.id-ff5a5f?style=for-the-badge"></a>
+</p>
+
+Support is voluntary. It does not unlock features, remove limits, or change how
+the app works. Starring the repository, sharing it with someone who needs it,
+and reporting a reproducible bug are just as helpful.
 
 ## License
 
