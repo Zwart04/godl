@@ -578,6 +578,11 @@ kbd {
   text-overflow: ellipsis;
 }
 
+#m-size {
+  margin-top: -9px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The address itself, shown whole. This is the one place a person has to read
    it to decide, and an ellipsized middle is precisely what hides the part that
    matters - so it wraps instead of widening the sheet off the screen. */

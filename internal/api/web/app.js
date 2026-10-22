@@ -964,28 +964,18 @@ function wireLimitSelect(sel, custom) {
  * than add - see submitAdd. */
 let captureID = '';
 
-/* Brings a hidden window back. Focus is not something the Wails runtime
- * offers - there is no WindowSetForeground - and a window that is merely shown
- * is still behind the browser that sent the link. That is why the Go side
- * raises the window from the capture handler; this is the belt for a window
- * hidden by something else. */
-function claimAttention() {
-  const rt = window.runtime;
-  if (!rt) return;
-  try {
-    if (rt.WindowUnminimise) rt.WindowUnminimise();
-    if (rt.WindowShow) rt.WindowShow();
-  } catch (_) {
-    /* the sheet still opens; it is simply somewhere behind everything */
-  }
-}
-
 /* The size line. It fills in once the server has asked the remote end, which
  * happens after the sheet is already up - so a slow server costs this line
  * and never the dialog itself. */
 function showCaptureSize(c) {
-  if (!c || !(c.size > 0)) return;
-  ui.mSize.textContent = size(c.size);
+  if (!c) return;
+  if (c.size > 0) {
+    ui.mSize.textContent = 'Ukuran: ' + size(c.size);
+  } else if (c.size_error) {
+    ui.mSize.textContent = c.size_error;
+  } else {
+    ui.mSize.textContent = 'Mengambil informasi ukuran…';
+  }
   ui.mSize.hidden = false;
 }
 
@@ -1040,9 +1030,10 @@ async function pollCaptures() {
 
   if (anySheetOpen() || !list.length) return;
   // Oldest first. Someone who clicked three links meant all three, and the
-  // one they clicked first is the one they expect to be asked about.
+  // one they clicked first is the one they expect to be asked about. The Go
+  // side has already shown and raised the window; doing it here as well made
+  // the small dialog flicker.
   openCapture(list[0]);
-  claimAttention();
 }
 
 /* ── wiring ────────────────────────────────────────────────────────────── */

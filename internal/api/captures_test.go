@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -206,6 +207,38 @@ func TestCaptureLearnsItsSizeWithoutHoldingUpTheDialog(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("the capture never learned its size; last seen %+v", captureList(t, f))
+}
+
+func TestCaptureShowsThatTheSizeIsStillBeingChecked(t *testing.T) {
+	f := newFixture(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		http.ServeContent(w, r, "file.bin", time.Time{}, bytes.NewReader(make([]byte, 4096)))
+	}))
+	t.Cleanup(srv.Close)
+
+	rec := postCapture(t, f, `{"url":"`+srv.URL+`/file.bin","filename":"file.bin"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/captures = %d, want 201", rec.Code)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the size probe did not start")
+	}
+	defer close(release)
+
+	caps := captureList(t, f)
+	if len(caps) != 1 || caps[0].Size != 0 || caps[0].SizeErr != "" {
+		t.Fatalf("capture while probe is pending = %+v, want a visible pending size", caps)
+	}
 }
 
 func TestCaptureCanBePutDown(t *testing.T) {

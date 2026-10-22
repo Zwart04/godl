@@ -33,6 +33,7 @@ const (
 	wsExToolWin = 0x00000080
 
 	swShow    = 5
+	swHide    = 0
 	swRestore = 9
 
 	// HWND_TOPMOST and HWND_NOTOPMOST are -1 and -2.
@@ -68,6 +69,13 @@ type windowPlacement struct {
 	RcNormalPosition rect
 }
 
+type monitorInfo struct {
+	CbSize    uint32
+	RcMonitor rect
+	RcWork    rect
+	DwFlags   uint32
+}
+
 var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
@@ -80,7 +88,10 @@ var (
 	procIsIconic                 = user32.NewProc("IsIconic")
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
 	procGetWindowPlacement       = user32.NewProc("GetWindowPlacement")
+	procSetWindowPlacement       = user32.NewProc("SetWindowPlacement")
 	procGetDpiForWindow          = user32.NewProc("GetDpiForWindow")
+	procMonitorFromWindow        = user32.NewProc("MonitorFromWindow")
+	procGetMonitorInfoW          = user32.NewProc("GetMonitorInfoW")
 	procShowWindow               = user32.NewProc("ShowWindow")
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
@@ -149,11 +160,61 @@ func Show(title string) {
 	}
 
 	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		// Resize and reposition while it is still minimized, then restore it
+		// exactly once. This avoids the large normal window flashing before a
+		// browser capture has reduced it to the compact dialog.
 		procShowWindow.Call(hwnd, swRestore)
 	} else {
-		procShowWindow.Call(hwnd, swShow)
+		shown, _, _ := procIsWindowVisible.Call(hwnd)
+		if shown == 0 {
+			procShowWindow.Call(hwnd, swShow)
+		}
 	}
 	raise(hwnd)
+}
+
+// RestorePlacement removes a minimized state but keeps the window hidden. It
+// writes the compact size and screen-centered position into the window's
+// normal placement first, so the next Show paints the dialog once instead of
+// flashing the manager's old size and then jumping.
+func RestorePlacement(title string, bounds Bounds) {
+	hwnd := find(title)
+	if hwnd == 0 {
+		return
+	}
+
+	var wp windowPlacement
+	wp.Length = uint32(unsafe.Sizeof(wp))
+	if ok, _, _ := procGetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp))); ok == 0 {
+		procShowWindow.Call(hwnd, swHide)
+		return
+	}
+	dpi := uintptr(96)
+	if procGetDpiForWindow.Find() == nil {
+		if got, _, _ := procGetDpiForWindow.Call(hwnd); got != 0 {
+			dpi = got
+		}
+	}
+	toPixels := func(v int) int32 { return int32(v * int(dpi) / 96) }
+	width, height := toPixels(bounds.Width), toPixels(bounds.Height)
+
+	// Center inside the work area of the monitor the manager is on, leaving
+	// the taskbar alone. A zero monitor means the window is already gone.
+	if mon, _, _ := procMonitorFromWindow.Call(hwnd, 2); mon != 0 {
+		info := monitorInfo{CbSize: uint32(unsafe.Sizeof(monitorInfo{}))}
+		if ok, _, _ := procGetMonitorInfoW.Call(mon, uintptr(unsafe.Pointer(&info))); ok != 0 {
+			wp.RcNormalPosition.Left = info.RcWork.Left +
+				(info.RcWork.Right-info.RcWork.Left-width)/2
+			wp.RcNormalPosition.Top = info.RcWork.Top +
+				(info.RcWork.Bottom-info.RcWork.Top-height)/2
+		}
+	}
+	wp.RcNormalPosition.Right = wp.RcNormalPosition.Left + width
+	wp.RcNormalPosition.Bottom = wp.RcNormalPosition.Top + height
+	wp.ShowCmd = uint32(swHide)
+	if ok, _, _ := procSetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp))); ok == 0 {
+		procShowWindow.Call(hwnd, swHide)
+	}
 }
 
 // Visible reports whether the window captioned title is open on the desktop.
@@ -246,8 +307,6 @@ func find(title string) uintptr {
 
 func raise(hwnd uintptr) {
 	flags := uintptr(swpNoSize | swpNoMove | swpShowWindow)
-	procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, flags)
-	procSetWindowPos.Call(hwnd, hwndNotTopmost, 0, 0, 0, 0, flags)
 
 	fg, _, _ := procGetForegroundWindow.Call()
 	cur, _, _ := procGetCurrentThreadID.Call()
@@ -267,9 +326,17 @@ func raise(hwnd uintptr) {
 
 	procBringWindowToTop.Call(hwnd)
 	if ok, _, _ := procSetForegroundWindow.Call(hwnd); ok == 0 {
-		// The undocumented but still present switch Windows itself uses
-		// when a program asks to be activated from the background.
-		procSwitchToThisWindow.Call(hwnd, 1)
+		// Windows sometimes refuses activation from a background request. Use
+		// the topmost pair only as a fallback; doing it on every show can make
+		// the window visibly flicker as it changes z-order twice.
+		procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, flags)
+		procSetWindowPos.Call(hwnd, hwndNotTopmost, 0, 0, 0, 0, flags)
+		procBringWindowToTop.Call(hwnd)
+		if ok, _, _ := procSetForegroundWindow.Call(hwnd); ok == 0 {
+			// The undocumented but still present switch Windows itself uses
+			// when a program asks to be activated from the background.
+			procSwitchToThisWindow.Call(hwnd, 1)
+		}
 	}
 
 	if attached {

@@ -223,14 +223,11 @@ func runWindow(noClipboard bool) {
 							minimized := foreground.Minimized(title)
 							if minimized {
 								// Wails' size query sees the minimized taskbar
-								// rectangle. Use the saved normal bounds, then hide
-								// immediately so the large window never flashes.
+								// rectangle. Use the saved normal bounds.
 								if bounds, ok := foreground.Placement(title); ok {
 									normal.width, normal.height = bounds.Width, bounds.Height
 								}
 								normal.center = true
-								runtime.WindowUnminimise(ctx)
-								runtime.WindowHide(ctx)
 							}
 							// Hidden windows can retain a stale off-screen position
 							// after a monitor change or a prior minimized restore.
@@ -244,6 +241,9 @@ func runWindow(noClipboard bool) {
 							runtime.WindowSetMinSize(ctx, 400, 420)
 							runtime.WindowSetSize(ctx, captureWidth, captureHeight)
 							runtime.WindowCenter(ctx)
+							if minimized {
+								foreground.RestorePlacement(title, foreground.Bounds{Width: captureWidth, Height: captureHeight})
+							}
 							// The sheet is already in the page; this hides the
 							// manager around it before the first frame.
 							runtime.WindowExecJS(ctx, "document.body.classList.add('capture-mode')")

@@ -279,14 +279,17 @@ type Capture struct {
 	Filename string `json:"filename"`
 	Category string `json:"category,omitempty"`
 
+	// Size is what the remote end reported, and stays zero until the probe
+	// answers. SizeErr is the sentence the sheet shows when it never will -
+	// a missing number is explained rather than left as a blank line.
+	Size    int64  `json:"size"`
+	SizeErr string `json:"size_error,omitempty"`
+
 	// Connections is what the page asked for, kept so the window can offer
 	// the same number back rather than falling to a default the person had
 	// already chosen away from.
 	Connections int `json:"connections,omitempty"`
 
-	// Size is what the server reported once someone looked. Zero means not
-	// asked yet, or that the server would not say - never "no bytes".
-	Size      int64  `json:"size"`
 	CreatedAt string `json:"created_at"`
 
 	// The credentials stay on the server. The window polls for captures
@@ -814,15 +817,21 @@ func (s *Server) probeSize(c *Capture) {
 
 	hints := engine.Hints{Cookie: c.Cookie, Referer: c.Referer, UserAgent: c.UserAgent}
 	probe, err := engine.Probe(ctx, s.Client, c.URL, hints)
-	if err != nil || probe.TotalSize <= 0 {
-		return
-	}
 
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
 	for _, other := range s.captures {
 		if other.ID == c.ID {
-			other.Size = probe.TotalSize
+			if err != nil {
+				other.SizeErr = "Ukuran belum bisa diketahui sebelum mulai."
+				return
+			}
+			if probe.TotalSize > 0 {
+				other.Size = probe.TotalSize
+				other.SizeErr = ""
+			} else {
+				other.SizeErr = "Server tidak memberikan informasi ukuran."
+			}
 			return
 		}
 	}
