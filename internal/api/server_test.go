@@ -129,6 +129,8 @@ func TestEveryAPIRouteRequiresTheToken(t *testing.T) {
 	}{
 		{"list", http.MethodGet, "/api/downloads", ""},
 		{"categories", http.MethodGet, "/api/categories", ""},
+		{"update", http.MethodGet, "/api/update", ""},
+		{"update check", http.MethodPost, "/api/update/check", ""},
 		{"health", http.MethodGet, "/api/health", ""},
 		{"add", http.MethodPost, "/api/downloads", `{"url":"http://127.0.0.1:9/x"}`},
 		{"pause", http.MethodPost, "/api/downloads/none/pause", ""},

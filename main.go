@@ -60,6 +60,10 @@ func main() {
 	// than it is typed at, and a usage page printed at someone who only meant
 	// to open the app would be worse than useless.
 	noClipboard := hasArg("--no-clipboard")
+	// The release check is the only thing godl asks the internet about on
+	// its own, so it can be turned off for a machine that would rather it
+	// did not.
+	noUpdateCheck := hasArg("--no-update-check")
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -78,11 +82,11 @@ func main() {
 			// watches only when handed --clipboard. The window's switch stops
 			// what is on by default; this one starts what is off. Spelled
 			// separately so neither reads as the other.
-			serve(hasArg("--clipboard"))
+			serve(hasArg("--clipboard"), noUpdateCheck)
 			return
 		}
 	}
-	runWindow(noClipboard)
+	runWindow(noClipboard, noUpdateCheck)
 }
 
 // hasArg reports whether the process was handed a word.
@@ -95,7 +99,7 @@ func hasArg(word string) bool {
 	return false
 }
 
-func runWindow(noClipboard bool) {
+func runWindow(noClipboard, noUpdateCheck bool) {
 	// A browser handoff is the one moment godl has to speak first. The
 	// window is often hidden in the tray or behind the browser that sent the
 	// link, so the request handler only says "there is something to answer"
@@ -109,9 +113,10 @@ func runWindow(noClipboard bool) {
 	answered := make(chan int, 1)
 
 	inst, err := app.Start(app.Options{
-		Parallel:    3,
-		Connections: 8,
-		NoClipboard: noClipboard,
+		Parallel:      3,
+		Connections:   8,
+		NoClipboard:   noClipboard,
+		NoUpdateCheck: noUpdateCheck,
 		OnCapture: func() {
 			select {
 			case handoffs <- struct{}{}:
@@ -312,14 +317,15 @@ func runWindow(noClipboard bool) {
 // The interface does not disappear - it moves to the recorded endpoint, which
 // any browser on the machine can open. Ctrl+C stops it and persists the queue
 // the same way closing the window does.
-func serve(watch bool) {
+func serve(watch, noUpdateCheck bool) {
 	inst, err := app.Start(app.Options{
 		Parallel:    3,
 		Connections: 8,
 		// Options is named for what to stop, which is the window's view of it;
 		// flipping it here keeps that one field rather than adding a second
 		// one that means the opposite.
-		NoClipboard: !watch,
+		NoClipboard:   !watch,
+		NoUpdateCheck: noUpdateCheck,
 		// No window means no download dialog, so a browser capture is
 		// started rather than held for an answer that cannot come.
 		Headless: true,

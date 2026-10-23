@@ -45,9 +45,22 @@ The following are generally out of scope:
 ## Security model
 
 godl is a per-user Windows program. It has no account system, cloud service,
-telemetry, analytics, or auto-update channel. Its network traffic is the
-download request itself, plus the loopback connection between the browser helper
+telemetry, or analytics, and it never downloads or installs an update on its
+own. Its network traffic is the download request itself, an optional release
+check against GitHub, plus the loopback connection between the browser helper
 and the manager.
+
+### Optional release check
+
+- After start-up, and only when the user presses **Check for updates**, godl may
+  request `https://api.github.com/repos/Zwart04/godl/releases/latest`.
+- The request carries the installed godl version in its `User-Agent`. It does
+  not include an account, cookies, download history, file names, or local paths.
+  As with any HTTPS request, GitHub can see the connecting IP address.
+- The response is used only to compare version numbers and to offer a link to
+  the release page. No installer is downloaded, executed, or run automatically.
+- `--no-update-check` disables both the startup check and the on-demand check,
+  including in `--serve` mode.
 
 ### Local API
 

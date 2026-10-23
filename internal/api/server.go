@@ -31,6 +31,7 @@ import (
 	"godl/internal/engine"
 	"godl/internal/queue"
 	"godl/internal/state"
+	"godl/internal/update"
 )
 
 //go:embed web
@@ -109,6 +110,11 @@ type Server struct {
 	// question is answered, and to stay small while another one is queued.
 	OnCaptureAnswered func(remaining int)
 
+	// Updates reports the current installed version and the result of the
+	// latest GitHub release check. It is nil when this run is not expected to
+	// contact the public release channel.
+	Updates *update.Checker
+
 	// capMu guards captures, for the same reason clipMu is separate from mu:
 	// the browser's handover arrives on its own goroutine while a request
 	// may be answering a different one.
@@ -161,6 +167,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/health", s.authed(http.HandlerFunc(s.handleHealth)))
 	mux.Handle("GET /api/downloads", s.authed(http.HandlerFunc(s.handleList)))
 	mux.Handle("GET /api/categories", s.authed(http.HandlerFunc(s.handleCategories)))
+	mux.Handle("GET /api/update", s.authed(http.HandlerFunc(s.handleUpdate)))
+	mux.Handle("POST /api/update/check", s.authed(http.HandlerFunc(s.handleUpdateCheck)))
 	mux.Handle("GET /api/clipboard", s.authed(http.HandlerFunc(s.handleClipboardOffer)))
 	mux.Handle("POST /api/clipboard/accept", s.authed(http.HandlerFunc(s.handleClipboardAccept)))
 	mux.Handle("POST /api/clipboard/ignore", s.authed(http.HandlerFunc(s.handleClipboardIgnore)))
@@ -257,6 +265,29 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"running":      s.Queue.Running(),
 		"download_dir": s.DownloadDir,
 	})
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.updateStatus())
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if s.Updates == nil {
+		writeJSON(w, http.StatusOK, update.Status{Enabled: false, Installed: Version})
+		return
+	}
+	status, err := s.Updates.Check(r.Context())
+	if err != nil && status.Error == "" {
+		status.Error = "Could not check for updates right now."
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) updateStatus() update.Status {
+	if s.Updates == nil {
+		return update.Status{Enabled: false, Installed: Version}
+	}
+	return s.Updates.Status()
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {

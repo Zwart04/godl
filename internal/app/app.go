@@ -33,6 +33,7 @@ import (
 	"godl/internal/notify"
 	"godl/internal/queue"
 	"godl/internal/status"
+	"godl/internal/update"
 )
 
 // Options selects how the manager behaves.
@@ -54,6 +55,11 @@ type Options struct {
 	// reading something shared with the whole desktop, and someone who does not
 	// want that said so gets to say so.
 	NoClipboard bool
+
+	// NoUpdateCheck turns off the optional release check. When it is set the
+	// app still works normally, but it never asks GitHub whether a newer
+	// version is available and shows no update notice.
+	NoUpdateCheck bool
 
 	// Headless says there is no window to ask. A browser capture is then
 	// started at once instead of waiting for an answer nobody is going to
@@ -160,6 +166,9 @@ func Start(o Options) (*Instance, error) {
 	q := queue.New(&store, o.Parallel)
 
 	srv := api.New(q, token)
+	if !o.NoUpdateCheck {
+		srv.Updates = update.New(api.Version)
+	}
 	srv.Connections = o.Connections
 	// The directory that was actually created, not the one that was asked
 	// for: they differ on a machine whose Downloads folder refuses writes.

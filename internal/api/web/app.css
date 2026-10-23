@@ -21,6 +21,9 @@
   --green:     #34c759;
   --amber:     #ff9f0a;
   --red:       #ff3b30;
+  --support:   #e55368;
+  --support-2: #d94a60;
+  --support-soft: rgba(229, 83, 104, .10);
   --hover:     rgba(0, 0, 0, .035);
   --sel:       rgba(0, 113, 227, .075);
   --radius:    8px;
@@ -163,6 +166,17 @@ body {
 .tool.danger:hover:not(:disabled) {
   background: rgba(255, 59, 48, .10);
   color: var(--red);
+}
+
+/* Support is warm rather than alarming: it sits beside Delete and must not
+   read as another destructive action. */
+.tool.support { color: var(--support); }
+.tool.support:hover:not(:disabled) { background: var(--support-soft); }
+.tool.support svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: none;
 }
 
 /* The page title carries the folder, so the toolbar can stay a row of
@@ -408,8 +422,9 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 13px;
   margin: 0;
+  padding: 32px 24px;
   background: var(--surface);
   border: 1px solid var(--hairline);
   border-radius: 12px;
@@ -417,23 +432,45 @@ body {
   color: var(--text-3);
 }
 
-.empty svg {
-  width: 46px;
-  height: 46px;
+.empty .empty-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 2px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(0, 113, 227, .09), rgba(0, 113, 227, .045));
+  color: var(--accent);
+}
+
+.empty .empty-mark svg {
+  width: 28px;
+  height: 28px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: .55;
 }
 
-.empty p {
+.empty-copy { max-width: 430px; text-align: center; }
+.empty-copy h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  color: var(--text);
+}
+.empty-copy p {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-3);
 }
-
-.empty .tool.primary { margin-top: 2px; }
+.empty-action { height: 34px; padding: 0 16px; margin-top: 2px; }
+.empty-action svg { width: 14px; height: 14px; }
+.empty-hint { margin-top: -4px; font-size: 11.5px; color: var(--text-3); }
 
 kbd {
   font: inherit;
@@ -748,3 +785,180 @@ body.capture-mode .sheet-actions { margin-top: auto; }
   border: 3px solid var(--surface);
 }
 .body::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, .28); }
+
+
+/* ── Update notice ───────────────────────────────────────────────────── */
+
+/* One line, never a modal: an available release is news, not a decision the
+   person has to answer before they can use the manager. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  margin: 14px 16px 0;
+  padding: 11px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .035), 0 8px 24px rgba(0, 0, 0, .05);
+  animation: notice-in .2s ease both;
+}
+
+@keyframes notice-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.notice-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(0, 113, 227, .09);
+  color: var(--accent);
+}
+.notice-mark svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.notice-copy { flex: 1 1 220px; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; }
+.notice-copy strong { display: block; font-weight: 650; color: var(--text); }
+.notice-copy span { display: block; color: var(--text-3); }
+.notice-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.notice-actions .tool { height: 30px; }
+.notice-actions .tool.primary { padding: 0 12px; }
+
+/* ── Support sheet ───────────────────────────────────────────────────── */
+
+.support-sheet {
+  width: min(500px, 100%);
+  max-height: calc(89vh - 24px);
+  padding: 22px;
+  overflow-y: auto;
+}
+
+.support-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid rgba(229, 83, 104, .16);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 235, 237, .92), rgba(255, 248, 246, .94));
+}
+.support-hero .support-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 50px;
+  height: 50px;
+  border-radius: 14px;
+  background: #fff;
+  color: var(--support);
+  box-shadow: 0 3px 10px rgba(229, 83, 104, .13);
+}
+.support-hero .support-mark svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
+.support-hero h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+}
+.support-hero p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+
+.tool.primary.support-cta {
+  width: 100%;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--support);
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(229, 83, 104, .20);
+}
+.tool.primary.support-cta:hover:not(:disabled) { background: var(--support-2); }
+.tool.primary.support-cta:active:not(:disabled) { background: #c94256; }
+.support-cta svg { width: 15px; height: 15px; fill: currentColor; stroke: none; }
+
+.support-points {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.support-points li {
+  position: relative;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.support-points li::before {
+  content: "✓";
+  position: absolute;
+  left: 1px;
+  top: -1px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.support-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+.version-line { display: flex; align-items: baseline; gap: 7px; }
+.version-line span { font-size: 11.5px; color: var(--text-3); }
+.version-line strong { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.update-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.update-line #sup-update-state { font-size: 11.5px; color: var(--text-3); }
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.link:hover { text-decoration: underline; }
+.link:disabled { color: var(--text-3); cursor: default; opacity: .7; text-decoration: none; }
+.support-meta > .link { margin-left: auto; }
+.support-sheet .sheet-actions { margin-top: 18px; }
+
+/* A support sheet and a capture question are never shown together. The
+   capture window is deliberately only the question. */
+body.capture-mode #support { display: none !important; }
+
+@media (max-width: 540px) {
+  .notice { flex-wrap: wrap; align-items: flex-start; margin: 10px 12px 0; }
+  .notice-actions { width: 100%; justify-content: flex-end; padding-left: 44px; }
+  .support-meta > .link { margin-left: 0; }
+}
+
+/* At the window's minimum height the support sheet would otherwise hide its
+   Close button below the edge. The paragraph above the points is the first
+   thing that can go; the points themselves are the actual choices. */
+@media (max-height: 480px) {
+  .support-sheet { padding: 18px; }
+  .support-hero { margin-bottom: 12px; padding: 12px; }
+  .support-hero p { display: none; }
+  .support-sheet .sheet-actions { margin-top: 12px; }
+}
+
+@media (max-height: 440px) {
+  .support-points { display: none; }
+}

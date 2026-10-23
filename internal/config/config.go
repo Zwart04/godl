@@ -23,7 +23,7 @@ const EnvHome = "GODL_HOME"
 
 // Version is reported by every surface that answers a version question, so the
 // CLI, the UI and the browser host cannot disagree about what is installed.
-const Version = "0.3.6"
+const Version = "0.3.7"
 
 const (
 	tokenFile    = "api-token"

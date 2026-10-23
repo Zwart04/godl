@@ -216,6 +216,10 @@ or a browser handoff until you confirm it.
   for a speed limit. It closes itself when the download does, and double-clicking
   a row brings it back
 - Sortable columns, in-place row updates, keyboard shortcuts
+- **An optional update notice and support sheet.** godl can check GitHub for a
+  newer release and link to it; nothing installs automatically. The support
+  sheet shows the version and the voluntary tako.id link without locking any
+  feature
 - Apple-inspired visual design: hairline rules, one accent colour, no chrome
   that is not doing work
 
@@ -405,12 +409,28 @@ Every switch is optional, and every one is on the same binary:
 | `--serve` | Runs the same engine with no window; <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it |
 | `--clipboard` | With `--serve`, watches the clipboard the way the window does |
 | `--no-clipboard` | Turns the watcher off for the window |
+| `--no-update-check` | Turns off the optional GitHub release check |
 
 ## Security and privacy
 
 godl is a local Windows program. There is no account, cloud service, telemetry,
-analytics, or auto-update channel. It contacts the network for the downloads you
-ask for, plus the loopback handoff between the browser helper and the manager.
+or analytics, and no update is ever installed automatically. It contacts the
+network for the downloads you ask for, the optional GitHub release check
+described below, and the loopback handoff between the browser helper and the
+manager.
+
+### Optional release check
+
+At start-up, and again only when you press **Check for updates** in the support
+sheet, godl may ask GitHub's public release API for the latest release tag. The
+request goes to `api.github.com`; it carries the installed version in its
+`User-Agent` and nothing about your account, cookies, download history, or
+files. As with any HTTPS request, GitHub can see the connecting IP address. The
+response only supplies a version number and a release link.
+
+If a newer release exists, godl shows a one-line notice with a **View release**
+button. It never downloads, runs, or installs anything on its own. The check is
+disabled entirely with `--no-update-check`, including in `--serve` mode.
 
 ### The local API stays on your machine
 
@@ -612,6 +632,8 @@ A bearer token is created on first run and stored at
 | Method | Path | |
 |---|---|---|
 | `GET` | `/api/health` | Liveness check |
+| `GET` | `/api/update` | Cached release-check result; does not contact GitHub |
+| `POST` | `/api/update/check` | Check the public GitHub release channel once |
 | `GET` | `/api/downloads` | Every record with live progress |
 | `GET` | `/api/categories` | The categories in force, in the order they are shown |
 | `GET` | `/api/clipboard` | The copied link waiting for an answer, if any |
@@ -849,11 +871,17 @@ godl/
 
 ## Support the project
 
+<p align="center">
+  <a href="https://tako.id/Zwart04">
+    <img src="docs/support-card.svg" alt="Support godl on tako.id. godl is free and open source." width="720">
+  </a>
+</p>
+
 godl is free and open source under the MIT license. If it saves you time and
 you would like to support its development, you can do so here:
 
 <p align="center">
-  <a href="https://tako.id/Zwart04"><img alt="Support the godl project on tako.id" src="https://img.shields.io/badge/Support%20the%20project-tako.id-ff5a5f?style=for-the-badge"></a>
+  <a href="https://tako.id/Zwart04"><img src="docs/support-badge.svg" alt="Support godl on tako.id" width="230"></a>
 </p>
 
 Support is voluntary. It does not unlock features, remove limits, or change how

@@ -263,6 +263,13 @@ Check "page is the IDM-style table" ($page.Content -match 'role="columnheader"')
 Check "page offers a speed limit control" ($page.Content -match 'id="t-limit"') "limit button missing from the served page"
 Check "page offers queue ordering" ($page.Content -match 'id="t-up"') "move-up button missing from the served page"
 Check "page offers a schedule control" ($page.Content -match 'id="t-schedule"') "schedule button missing from the served page"
+Check "page offers the update notice" ($page.Content -match 'id="update-notice"') "update notice missing from the served page"
+Check "page offers the support sheet" ($page.Content -match 'id="support"') "support sheet missing from the served page"
+
+$updateStatus = Invoke-Api "/api/update" "GET" $true $null
+Check "update status answers" ($updateStatus.code -eq 200) "got $($updateStatus.code): $($updateStatus.body)"
+Check "update status is enabled" ($updateStatus.body -match '"enabled"\s*:\s*true') "not enabled: $($updateStatus.body)"
+Check "update status names the installed version" ($updateStatus.body -match '"current"\s*:\s*"[^"]+"') "no current version: $($updateStatus.body)"
 
 $css = Invoke-WebRequest "$ep/app.css" -UseBasicParsing -TimeoutSec 10
 Check "stylesheet serves" ($css.StatusCode -eq 200) "got $($css.StatusCode)"

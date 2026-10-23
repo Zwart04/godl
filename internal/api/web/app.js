@@ -16,6 +16,9 @@
 'use strict';
 
 const TOKEN = document.querySelector('meta[name="godl-token"]').content;
+const REPO_URL = 'https://github.com/Zwart04/godl';
+const SUPPORT_URL = 'https://tako.id/Zwart04';
+const RELEASE_URL = REPO_URL + '/releases/latest';
 const $ = (id) => document.getElementById(id);
 
 const ui = {
@@ -83,6 +86,18 @@ const ui = {
   rmCancel: $('rm-cancel'),
   rmOk: $('rm-ok'),
   toast: $('toast'),
+  support: $('t-support'),
+  notice: $('update-notice'),
+  updateDetail: $('update-detail'),
+  updateOpen: $('update-open'),
+  updateClose: $('update-close'),
+  supportModal: $('support'),
+  supClose: $('sup-close'),
+  supSupport: $('sup-support'),
+  supCheck: $('sup-check'),
+  supUpdateState: $('sup-update-state'),
+  supVersion: $('sup-version'),
+  supGithub: $('sup-github'),
 };
 
 /* The offer, in bytes per second. Both menus are built from this one list so
@@ -139,6 +154,9 @@ let sortDir = 1;
 let lastOrder = '';
 let offline = false;
 let toastTimer = null;
+let appVersion = '';
+let updateInfo = null;
+let updateChecking = false;
 
 /* ── transport ─────────────────────────────────────────────────────────── */
 
@@ -159,6 +177,121 @@ function toast(message, bad) {
   ui.toast.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { ui.toast.hidden = true; }, bad ? 5200 : 3000);
+}
+
+/* ── update notice and support ─────────────────────────────────────────── */
+
+function versionLabel(v) {
+  const text = String(v || '').trim();
+  return text ? 'v' + text.replace(/^v/i, '') : '—';
+}
+
+function setUpdateState(message) {
+  ui.supUpdateState.textContent = message;
+}
+
+/* Only these two destinations are ever handed to the shell. The release URL
+ * comes back from the manager already checked against the project's own
+ * release page, but a small allowlist keeps the rule local and visible. */
+function openExternal(raw) {
+  const url = String(raw || '');
+  if (!/^https:\/\/(?:github\.com|tako\.id)\//i.test(url)) return;
+  if (window.runtime && typeof window.runtime.BrowserOpenURL === 'function') {
+    window.runtime.BrowserOpenURL(url);
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function supportStateFor(st) {
+  if (!st) {
+    setUpdateState('Not checked yet.');
+    return;
+  }
+  if (st.enabled === false) {
+    setUpdateState('Update checks are off.');
+    return;
+  }
+  if (st.error) {
+    setUpdateState(st.error);
+    return;
+  }
+  if (st.available) {
+    setUpdateState(versionLabel(st.latest) + ' is available.');
+    return;
+  }
+  setUpdateState("You're on the latest version.");
+}
+
+/* Draws the one-line notice. A failure is deliberately quiet: the manager
+ * still works, and an unavailable release channel is not a reason to put an
+ * error in front of someone who only opened a download manager. */
+function renderUpdateStatus(st) {
+  updateInfo = st || null;
+  if (!st) return;
+  if (st.current) {
+    appVersion = st.current;
+    ui.supVersion.textContent = versionLabel(appVersion);
+  }
+  if (st.enabled === false) {
+    ui.notice.hidden = true;
+    ui.supCheck.hidden = true;
+    supportStateFor(st);
+    return;
+  }
+  ui.supCheck.hidden = false;
+  supportStateFor(st);
+  if (st.error) {
+    ui.notice.hidden = true;
+    return;
+  }
+  if (st.available) {
+    ui.updateDetail.textContent = versionLabel(st.latest) + ' is ready to download.';
+    ui.notice.hidden = false;
+    return;
+  }
+  ui.notice.hidden = true;
+}
+
+async function checkForUpdates(manual) {
+  if (updateChecking || ui.supCheck.hidden) return;
+  updateChecking = true;
+  const label = ui.supCheck.textContent;
+  ui.supCheck.disabled = true;
+  ui.supCheck.textContent = 'Checking…';
+  setUpdateState('Checking GitHub…');
+
+  try {
+    const st = await api('/api/update/check', { method: 'POST' });
+    renderUpdateStatus(st);
+    if (manual) {
+      if (st && st.error) toast(st.error, true);
+      else if (st && st.enabled === false) toast('Update checks are turned off.', false);
+      else if (st && st.available) toast(versionLabel(st.latest) + ' is available.', false);
+      else toast("You're on the latest version.", false);
+    }
+  } catch (_) {
+    const message = 'Could not check for updates right now.';
+    updateInfo = { enabled: true, current: appVersion, error: message };
+    setUpdateState(message);
+    if (manual) toast(message, true);
+  } finally {
+    updateChecking = false;
+    ui.supCheck.disabled = false;
+    ui.supCheck.textContent = label;
+  }
+}
+
+function openSupport() {
+  ui.supportModal.hidden = false;
+  if (appVersion) ui.supVersion.textContent = versionLabel(appVersion);
+  if (updateChecking) setUpdateState('Checking GitHub…');
+  else supportStateFor(updateInfo);
+  setTimeout(() => ui.supSupport.focus(), 40);
+}
+
+function closeSupport() {
+  ui.supportModal.hidden = true;
 }
 
 /* ── formatting ────────────────────────────────────────────────────────── */
@@ -865,7 +998,8 @@ let clipLink = '';
 
 function anySheetOpen() {
   return !ui.clipModal.hidden || !ui.catModal.hidden || !ui.schedModal.hidden ||
-    !ui.limitModal.hidden || !ui.rmModal.hidden || !ui.modal.hidden;
+    !ui.limitModal.hidden || !ui.rmModal.hidden || !ui.modal.hidden ||
+    !ui.supportModal.hidden;
 }
 
 function openClipboard(url) {
@@ -1097,6 +1231,17 @@ ui.rmOk.addEventListener('click', submitRemove);
 ui.rmFile.addEventListener('change', removeHint);
 ui.emptyAdd.addEventListener('click', openModal);
 
+ui.support.addEventListener('click', openSupport);
+ui.supClose.addEventListener('click', closeSupport);
+ui.supportModal.addEventListener('click', (e) => { if (e.target === ui.supportModal) closeSupport(); });
+ui.supSupport.addEventListener('click', () => openExternal(SUPPORT_URL));
+ui.supGithub.addEventListener('click', () => openExternal(REPO_URL));
+ui.supCheck.addEventListener('click', () => checkForUpdates(true));
+ui.updateOpen.addEventListener('click', () => {
+  openExternal((updateInfo && updateInfo.url) || RELEASE_URL);
+});
+ui.updateClose.addEventListener('click', () => { ui.notice.hidden = true; });
+
 ui.clipModal.addEventListener('click', (e) => { if (e.target === ui.clipModal) closeClipboard(); });
 ui.clNo.addEventListener('click', closeClipboard);
 ui.clYes.addEventListener('click', submitClipboard);
@@ -1114,6 +1259,10 @@ ui.reveal.addEventListener('click', () => act('reveal'));
 ui.remove.addEventListener('click', openRemove);
 
 document.addEventListener('keydown', (e) => {
+  if (!ui.supportModal.hidden) {
+    if (e.key === 'Escape') closeSupport();
+    return;
+  }
   // The sheets stack, so the one on top answers first - otherwise Escape
   // would close two of them at once and leave the caller unsure what changed.
   // A copied link is drawn over everything, because it is a question with
@@ -1214,6 +1363,8 @@ async function bootstrap() {
     const health = await api('/api/health');
     ui.dir.textContent = health.download_dir || '';
     ui.dir.title = health.download_dir || '';
+    appVersion = health.version || '';
+    ui.supVersion.textContent = versionLabel(appVersion);
   } catch (_) {
     /* the list below reports connectivity more usefully than this would */
   }
@@ -1231,6 +1382,10 @@ async function bootstrap() {
   fillCategorySelects();
 
   await refresh();
+
+  // One release check after the list is on screen, then only when asked. The
+  // short delay keeps a slow release host from competing with the first paint.
+  setTimeout(() => { void checkForUpdates(false); }, 700);
 }
 
 bootstrap();

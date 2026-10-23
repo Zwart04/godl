@@ -146,6 +146,7 @@ menampilkan konfirmasi lebih dulu.
 | **Category** | Memindahkan file ke folder kategori lain. |
 | **Folder** | Membuka Explorer dengan file hasil unduhan dipilih. |
 | **Delete** | Menghapus catatan unduhan dari daftar. |
+| **Support** | Membuka panel dukungan: versi, cek pembaruan, dan tautan tako.id. |
 
 Menutup jendela membuat godl tetap berjalan di tray. Jika ada transfer aktif,
 godl akan bertanya lebih dulu; transfer dijeda dengan progres tetap tersimpan.
@@ -153,9 +154,25 @@ Unduhan yang antre dilanjutkan saat godl dibuka lagi.
 
 ## Keamanan dan privasi
 
-godl adalah program lokal. Tidak ada akun, layanan cloud, telemetry, analytics,
-atau auto-update. Koneksi internet hanya dipakai untuk mengunduh file yang kamu
-minta, ditambah komunikasi lokal antara browser dan godl di komputer yang sama.
+godl adalah program lokal. Tidak ada akun, layanan cloud, telemetry, atau
+analytics, dan tidak ada pembaruan yang dipasang otomatis. Koneksi internet
+dipakai untuk mengunduh file yang kamu minta, pemeriksaan rilis GitHub yang
+opsional (lihat di bawah), dan komunikasi lokal antara browser dan godl di
+komputer yang sama.
+
+### Pemeriksaan pembaruan (opsional)
+
+Saat mulai, dan hanya saat kamu menekan **Check for updates** di panel dukungan,
+godl dapat menanyakan rilis terbaru ke API publik GitHub. Permintaan dikirim ke
+`api.github.com` dan hanya membawa versi godl yang terpasang di `User-Agent`;
+tidak ada akun, cookie, riwayat unduhan, atau nama file. Seperti permintaan
+HTTPS lain, GitHub dapat melihat alamat IP yang terhubung. Jawabannya hanya
+berisi nomor versi dan tautan rilis.
+
+Kalau ada versi baru, godl menampilkan satu baris pemberitahuan dengan tombol
+**View release**. godl tidak mengunduh, menjalankan, atau memasang pembaruan
+sendiri. Matikan sepenuhnya dengan `--no-update-check`, termasuk saat memakai
+`--serve`.
 
 ### API lokal tidak terbuka ke jaringan
 
@@ -305,11 +322,17 @@ Untuk tetap memakai godl tetapi tidak menjalankannya saat Windows mulai, pakai
 
 ## Dukungan
 
+<p align="center">
+  <a href="https://tako.id/Zwart04">
+    <img src="docs/support-card.svg" alt="Dukung godl di tako.id. godl gratis dan open source." width="720">
+  </a>
+</p>
+
 godl gratis dan open source dengan lisensi MIT. Kalau proyek ini membantu dan
 kamu ingin mendukung pengembangnya, dukungan sukarela bisa diberikan di sini:
 
 <p align="center">
-  <a href="https://tako.id/Zwart04"><img alt="Dukung proyek godl di tako.id" src="https://img.shields.io/badge/Dukung%20proyek-tako.id-ff5a5f?style=for-the-badge"></a>
+  <a href="https://tako.id/Zwart04"><img src="docs/support-badge.svg" alt="Dukung godl di tako.id" width="230"></a>
 </p>
 
 Dukungan bersifat opsional. Tidak ada fitur yang dikunci, tidak ada batas

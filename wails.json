@@ -5,6 +5,13 @@
   "author": {
     "name": "godl"
   },
+  "info": {
+    "companyName": "Zwart",
+    "productName": "godl",
+    "productVersion": "0.3.7",
+    "copyright": "Copyright © 2026 Zwart",
+    "comments": "Segmented download manager for Windows"
+  },
   "frontend:dir": "frontend",
   "frontend:install": "",
   "frontend:build": "",

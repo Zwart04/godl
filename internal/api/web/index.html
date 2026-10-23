@@ -72,7 +72,27 @@
     </button>
 
     <span class="spacer"></span>
+
+    <button class="tool support" id="t-support" type="button" title="Support godl" aria-label="Support godl">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13.4S2.2 10.2 1.5 6.7C1 4.3 2.5 2.5 4.8 2.5c1.4 0 2.4.8 3.2 1.8.8-1 1.8-1.8 3.2-1.8 2.3 0 3.8 1.8 3.3 4.2C13.8 10.2 8 13.4 8 13.4Z"/></svg>
+      <span>Support</span>
+    </button>
+
   </header>
+
+  <div class="notice" id="update-notice" hidden role="region" aria-label="Update available" aria-live="polite">
+    <span class="notice-mark" aria-hidden="true">
+      <svg viewBox="0 0 16 16"><path d="M8 1.8v7.4M5 6l3 3 3-3M2 11.2v2.3h12v-2.3"/></svg>
+    </span>
+    <p class="notice-copy">
+      <strong>Update available</strong>
+      <span id="update-detail"></span>
+    </p>
+    <div class="notice-actions">
+      <button class="tool primary" id="update-open" type="button">View release</button>
+      <button class="tool" id="update-close" type="button" aria-label="Dismiss update notice">Dismiss</button>
+    </div>
+  </div>
 
   <div class="page">
     <div class="page-head">
@@ -95,15 +115,21 @@
   </div>
 
     <div class="empty" id="empty" hidden>
-      <svg viewBox="0 0 48 48" aria-hidden="true">
-        <rect x="7" y="9" width="34" height="30" rx="7"/>
-        <path d="M24 17v10m0 0l-4-4m4 4l4-4M17 32h14"/>
-      </svg>
-      <p>No downloads yet</p>
-      <button class="tool primary" id="empty-add" type="button">
+      <span class="empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48">
+          <rect x="7" y="9" width="34" height="30" rx="7"/>
+          <path d="M24 17v10m0 0l-4-4m4 4l4-4M17 32h14"/>
+        </svg>
+      </span>
+      <div class="empty-copy">
+        <h2>Nothing queued yet</h2>
+        <p>Add a direct file link, or let the browser extension hand the next download over.</p>
+      </div>
+      <button class="tool primary empty-action" id="empty-add" type="button">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
         <span>Add a download</span>
       </button>
+      <span class="empty-hint">or press <kbd>Ctrl</kbd> + <kbd>N</kbd></span>
     </div>
   </div>
 
@@ -274,6 +300,48 @@
     <div class="sheet-actions">
       <button class="tool" id="cl-no" type="button">Not now</button>
       <button class="tool primary" id="cl-yes" type="button">Download</button>
+    </div>
+  </div>
+</div>
+
+
+<div class="scrim" id="support" hidden>
+  <div class="sheet support-sheet" role="dialog" aria-modal="true" aria-labelledby="sup-title">
+    <div class="support-hero">
+      <span class="support-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M16 27.2S3.8 20.1 3.8 11.7C3.8 7.6 6.9 4.8 10.5 4.8c2.5 0 4.4 1.4 5.5 3.2 1.1-1.8 3-3.2 5.5-3.2 3.6 0 6.7 2.8 6.7 6.9 0 8.4-12.2 15.5-12.2 15.5Z"/></svg>
+      </span>
+      <div>
+        <h2 id="sup-title">Keep godl free</h2>
+        <p>No ads, no account, no paid tier. If godl saves you time, you can support the work.</p>
+      </div>
+    </div>
+
+    <button class="tool primary support-cta" id="sup-support" type="button">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13.4S2.2 10.2 1.5 6.7C1 4.3 2.5 2.5 4.8 2.5c1.4 0 2.4.8 3.2 1.8.8-1 1.8-1.8 3.2-1.8 2.3 0 3.8 1.8 3.3 4.2C13.8 10.2 8 13.4 8 13.4Z"/></svg>
+      <span>Support on tako.id</span>
+    </button>
+
+    <ul class="support-points">
+      <li>Voluntary and one-time — never required.</li>
+      <li>No features are locked or changed.</li>
+      <li>The app stays local, open source, and MIT licensed.</li>
+    </ul>
+
+    <div class="support-meta">
+      <div class="version-line">
+        <span>Version</span>
+        <strong id="sup-version">—</strong>
+      </div>
+      <div class="update-line">
+        <button class="link" id="sup-check" type="button">Check for updates</button>
+        <span id="sup-update-state" aria-live="polite">Not checked yet.</span>
+      </div>
+      <button class="link" id="sup-github" type="button">Star on GitHub</button>
+    </div>
+
+    <div class="sheet-actions">
+      <button class="tool" id="sup-close" type="button">Close</button>
     </div>
   </div>
 </div>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="250" viewBox="0 0 900 250" role="img" aria-labelledby="title desc">
+  <title id="title">Support godl</title>
+  <desc id="desc">godl is free and open source. Optional support is available at tako.id/Zwart04.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff8f6"/>
+      <stop offset="1" stop-color="#fff0f1"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff7a88"/>
+      <stop offset="1" stop-color="#e23f5b"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#e23f5b" flood-opacity=".18"/>
+    </filter>
+  </defs>
+
+  <rect x="1" y="1" width="898" height="248" rx="24" fill="url(#bg)" stroke="#ffd9de" stroke-width="2"/>
+  <circle cx="808" cy="46" r="88" fill="#ffdfe3" fill-opacity=".45"/>
+  <circle cx="845" cy="218" r="104" fill="#ffe9e6" fill-opacity=".6"/>
+
+  <g filter="url(#shadow)">
+    <rect x="48" y="48" width="96" height="96" rx="28" fill="url(#mark)"/>
+  </g>
+  <path d="M96 120s-25-14.8-25-32.5c0-8.5 6.2-14.5 13.9-14.5 5.1 0 8.9 3 11.1 6.6 2.2-3.6 6-6.6 11.1-6.6 7.7 0 13.9 6 13.9 14.5C121 105.2 96 120 96 120Z" fill="#ffffff"/>
+
+  <text x="176" y="83" fill="#2a1d20" font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Arial, sans-serif" font-size="31" font-weight="700" letter-spacing="-.5">godl is free. Keep it that way.</text>
+  <text x="176" y="118" fill="#6d5559" font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Arial, sans-serif" font-size="15.5" font-weight="400">If it saves you time, you can support development on tako.id.</text>
+  <text x="176" y="143" fill="#8a6c70" font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Arial, sans-serif" font-size="13.5" font-weight="400">Optional, one-time, and never required. No features are locked.</text>
+
+  <rect x="48" y="178" width="231" height="46" rx="23" fill="#e55368"/>
+  <path d="M73 201.5s-7-4.2-7-9.2c0-2.4 1.8-4.2 4-4.2 1.4 0 2.5.8 3 1.9.5-1.1 1.6-1.9 3-1.9 2.2 0 4 1.8 4 4.2 0 5-7 9.2-7 9.2Z" fill="#ffffff"/>
+  <text x="88" y="207" fill="#ffffff" font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Arial, sans-serif" font-size="15" font-weight="650">tako.id/Zwart04</text>
+
+  <text x="302" y="206" fill="#a4878a" font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Arial, sans-serif" font-size="13">Open source · MIT licensed · no account · no ads</text>
+</svg>
